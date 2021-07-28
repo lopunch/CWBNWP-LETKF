@@ -1,0 +1,136 @@
+&control
+
+ write_analy_mean = .false.
+ wrf_mp_physics   = 9
+ wrf_mp_hail_opt  = 0
+ nmember          = 96
+ var_update       = 'U','V', 'W','T','QVAPOR','QRAIN','QSNOW','QGRAUP','QHAIL','QNRAIN','QNSNOW','QNGRAUPEL','QNHAIL',
+
+ /
+
+&observations
+
+ radar_nml%dbz%use_it   = .true.,
+ radar_nml%vr%use_it    = .true.,
+ synop_nml%use_it       = .true.,
+ metar_nml%use_it       = .true.,
+ ships_nml%use_it       = .true.,
+ sound_nml%use_it       = .true.,
+
+!=========================================================
+
+ radar_nml%hclr_rej     =  3.    ,
+ radar_nml%vclr_rej     =  3.    ,
+
+ radar_nml%dbz%is_assim = .false.,.false.,.false.,.false.,.false.,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,
+ radar_nml%dbz%err_rej  = 20.    ,
+ radar_nml%dbz%error    = 2.5    ,
+ radar_nml%dbz%hclr     =      0.,     0.,     0.,     0.,     0.,    8. ,     8.,     8.,    8. ,     8.,     8.,    8. ,     8.,
+ radar_nml%dbz%vclr     =      0.,     0.,     0.,     0.,     0.,    2. ,     2.,     2.,    2. ,     2.,     2.,    2. ,     2.,
+
+ radar_nml%vr%is_assim  = .true. ,.true. ,.true. ,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ radar_nml%vr%err_rej   =  8.    ,
+ radar_nml%vr%error     =  1.    ,
+ radar_nml%vr%hclr      =     36.,    36.,    12.,    24.,    24.,    0. ,     0.,     0.,    0. ,     0.,     0.,    0. ,     0.,
+ radar_nml%vr%vclr      =      3.,     3.,     3.,     3.,     3.,    0. ,     0.,     0.,    0. ,     0.,     0.,    0. ,     0.,
+
+!=========================================================
+
+ synop_nml%hclr_rej     =  3.    ,
+ synop_nml%vclr_rej     =  3.    ,
+ synop_nml%hclr         =      50,     50,     50,     50,     50,     -1,     -1,     -1,     -1,     -1,     -1,     -1,     -1,
+ synop_nml%vclr         =       3,      3,      3,      3,      3,     -1,     -1,     -1,     -1,     -1,     -1,     -1,     -1,
+
+ synop_nml%u%is_assim   = .true. ,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ synop_nml%u%err_rej    =  5.    ,
+ synop_nml%u%err_muti   = 0.5    ,
+
+ synop_nml%v%is_assim   = .true. ,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ synop_nml%v%err_rej    =  5.    ,
+ synop_nml%v%err_muti   = 0.5    ,
+
+ synop_nml%t%is_assim   = .false.,.false.,.false.,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ synop_nml%t%err_rej    =  5.    ,
+ synop_nml%t%err_muti   = 0.25   ,
+
+ synop_nml%q%is_assim   = .false.,.false.,.false.,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ synop_nml%q%err_rej    =  5.    ,
+ synop_nml%q%err_muti   = 0.4    ,
+
+!=========================================================
+
+ metar_nml%hclr_rej     =  3.    ,
+ metar_nml%vclr_rej     =  3.    ,
+ metar_nml%hclr         =      50,     50,     50,     50,     50,     -1,     -1,     -1,     -1,     -1,     -1,     -1,     -1,
+ metar_nml%vclr         =       3,      3,      3,      3,      3,     -1,     -1,     -1,     -1,     -1,     -1,     -1,     -1,
+
+ metar_nml%u%is_assim   = .true. ,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ metar_nml%u%err_rej    =  5.    ,
+ metar_nml%u%err_muti   = 0.5    ,
+
+ metar_nml%v%is_assim   = .true. ,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ metar_nml%v%err_rej    =  5.    ,
+ metar_nml%v%err_muti   = 0.5    ,
+
+ metar_nml%t%is_assim   = .false.,.false.,.false.,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ metar_nml%t%err_rej    =  5.    ,
+ metar_nml%t%err_muti   = 0.25   ,
+
+ metar_nml%q%is_assim   = .false.,.false.,.false.,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ metar_nml%q%err_rej    =  5.    ,
+ metar_nml%q%err_muti   = 0.4    ,
+
+!=========================================================
+
+ ships_nml%hclr_rej     =  3.    ,
+ ships_nml%vclr_rej     =  3.    ,
+ ships_nml%hclr         =      75,     75,     75,     75,     75,     -1,     -1,     -1,     -1,     -1,     -1,     -1,     -1,
+ ships_nml%vclr         =       4,      4,      4,      4,      4,     -1,     -1,     -1,     -1,     -1,     -1,     -1,     -1,
+
+ ships_nml%u%is_assim   = .true. ,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ ships_nml%u%err_rej    =  5.    ,
+ ships_nml%u%err_muti   = 0.5    ,
+
+ ships_nml%v%is_assim   = .true. ,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ ships_nml%v%err_rej    =  5.    ,
+ ships_nml%v%err_muti   = 0.5    ,
+
+ ships_nml%t%is_assim   = .false.,.false.,.false.,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ ships_nml%t%err_rej    =  5.    ,
+ ships_nml%t%err_muti   = 0.25   ,
+
+ ships_nml%q%is_assim   = .false.,.false.,.false.,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ ships_nml%q%err_rej    =  5.    ,
+ ships_nml%q%err_muti   = 0.4    ,
+
+!=========================================================
+
+ sound_nml%hclr_rej     =  3.    ,
+ sound_nml%vclr_rej     =  3.    ,
+ sound_nml%hclr         =      75,     75,     75,     75,     75,     -1,     -1,     -1,     -1,     -1,     -1,     -1,     -1,
+ sound_nml%vclr         =       3,      3,      3,      3,      3,     -1,     -1,     -1,     -1,     -1,     -1,     -1,     -1,
+
+ sound_nml%u%is_assim   = .true. ,.true. ,.false.,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ sound_nml%u%err_rej    =  5.    ,
+ sound_nml%u%err_muti   = 0.5    ,
+
+ sound_nml%v%is_assim   = .true. ,.true. ,.false.,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ sound_nml%v%err_rej    =  5.    ,
+ sound_nml%v%err_muti   = 0.5    ,
+
+ sound_nml%t%is_assim   = .true. ,.true. ,.false.,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ sound_nml%t%err_rej    =  5.    ,
+ sound_nml%t%err_muti   = 0.25   ,
+
+ sound_nml%q%is_assim   = .true. ,.true. ,.false.,.true. ,.true. ,.false.,.false.,.false.,.false.,.false.,.false.,.false.,.false.,
+ sound_nml%q%err_rej    =  5.    ,
+ sound_nml%q%err_muti   = 0.4    ,
+
+ /
+
+&inflation
+ multi_infl      =     1.6,    1.6,    1.1,    1.6,    1.6,    1.1,    1.1,    1.1,    1.1,    1.1,    1.1,    1.1,    1.1,
+
+ use_RTPP        = .true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,
+ use_RTPS        = .true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,
+ /
