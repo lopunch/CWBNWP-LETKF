@@ -10,8 +10,8 @@ module simulated_radar
     public  :: radar_structure, cwb_radar
 
     type, extends(obs_structure)           :: radar_structure
-        real, dimension(:),   allocatable  :: obs, alt
-        real, dimension(:,:), allocatable  :: omb
+        real, dimension(:),   allocatable  :: obs
+        real, dimension(:,:), allocatable  :: hdxb
     end type radar_structure
 
     !========================================================================================
@@ -72,21 +72,20 @@ contains
             obs_type = kdp
         end select
 
-        associate( radarobs => self % radarobs )
-            radarobs(obs_type)%nobs  = nobs
-            allocate(radarobs(obs_type)%obs(nobs),  &
-                     radarobs(obs_type)%lat(nobs),  &
-                     radarobs(obs_type)%lon(nobs),  &
-                     radarobs(obs_type)%alt(nobs),  &
-                     radarobs(obs_type)%omb(nobs,0:nmember-1))
+        associate( radarobs => self % radarobs(obs_type) )
+            radarobs % nobs  = nobs
+            allocate(radarobs % obs (nobs),  &
+                     radarobs % lat (nobs),  &
+                     radarobs % lon (nobs),  &
+                     radarobs % alt (nobs),  &
+                     radarobs % hdxb(nobs,0:nmember-1))
 
             do n = 1, nobs
                 read(50, '(5(f10.4,1x))', iostat=ierr)    &
-                             radarobs(obs_type)%obs(n),   &
-                             radarobs(obs_type)%omb(n,0), &    !read background value, not omb yet
-                             radarobs(obs_type)%lon(n),   &
-                             radarobs(obs_type)%lat(n),   &
-                             radarobs(obs_type)%alt(n)
+                    radarobs % obs (n), radarobs % hdxb(n,0), &
+                    radarobs % lon (n), radarobs % lat (n),   &
+                    radarobs % alt (n)
+
                 if(ierr < 0) exit
                 if(ierr > 0) then
                     print *, "read "//varname//"_letkf data error"
@@ -97,11 +96,9 @@ contains
 
                 if(write_test) then
                     write(30,'(5(f10.4,1x))')           &
-                             radarobs(obs_type)%obs(n), &
-                             radarobs(obs_type)%omb(n,0), &
-                             radarobs(obs_type)%lon(n),   &
-                             radarobs(obs_type)%lat(n),   &
-                             radarobs(obs_type)%alt(n)
+                        radarobs % obs (n), radarobs % hdxb(n,0), &
+                        radarobs % lon (n), radarobs % lat (n),   &
+                        radarobs % alt (n)
                 end if
             end do 
         end associate
@@ -124,35 +121,35 @@ contains
         integer,  dimension(0:nproc-1)          :: recvcount, displs
         integer                                 :: mpierr, sendcount
         integer,  dimension(:),     allocatable :: i4_nobs
-        real,     dimension(:),     allocatable :: local_omb
+        real,     dimension(:),     allocatable :: local_hdxb
 
 
         !broadcast number of obs of each obs type
         allocate(i4_nobs(num_radar_indexes))
         if(myid == root) then
             do obs_type = 1, num_radar_indexes
-                i4_nobs(obs_type) = self%radarobs(obs_type)%nobs
+                i4_nobs(obs_type) = self % radarobs(obs_type) % nobs
             end do
         end if
 
         call mpi_bcast(i4_nobs, num_radar_indexes, mpi_integer, root, mpi_comm_world, mpierr)
 
         !start exchange obs info
-        associate( radarobs => self%radarobs )
-            do obs_type = 1, num_radar_indexes
-                nobs = i4_nobs(obs_type)
-                radarobs(obs_type)%nobs = nobs
+        do obs_type = 1, num_radar_indexes
+            nobs = i4_nobs(obs_type)
+            associate( radarobs => self % radarobs(obs_type) )
+                radarobs % nobs = nobs
                 if(nobs > 0) then
-                    if(allocated(radarobs(obs_type)%obs)) then
-                        allocate(local_omb(nobs))
-                        local_omb = radarobs(obs_type)%omb(:,0)
+                    if(allocated(radarobs % obs)) then
+                        allocate(local_hdxb(nobs))
+                        local_hdxb = radarobs % hdxb(:,0)
                         sendcount = nobs
                     else
-                        allocate(radarobs(obs_type)%obs(nobs),  &
-                                 radarobs(obs_type)%lat(nobs),  &
-                                 radarobs(obs_type)%lon(nobs),  &
-                                 radarobs(obs_type)%alt(nobs),  &
-                                 radarobs(obs_type)%omb(nobs,0:nmember-1))
+                        allocate(radarobs % obs (nobs),  &
+                                 radarobs % lat (nobs),  &
+                                 radarobs % lon (nobs),  &
+                                 radarobs % alt (nobs),  &
+                                 radarobs % hdxb(nobs,0:nmember-1))
                         sendcount = 0
                     end if
 
@@ -165,21 +162,21 @@ contains
                     end do
 
                     call request_append
-                    call mpi_ibcast(radarobs(obs_type)%obs, nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
+                    call mpi_ibcast(radarobs % obs, nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
                     call request_append
-                    call mpi_ibcast(radarobs(obs_type)%lat, nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
+                    call mpi_ibcast(radarobs % lat, nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
                     call request_append
-                    call mpi_ibcast(radarobs(obs_type)%lon, nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
+                    call mpi_ibcast(radarobs % lon, nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
                     call request_append
-                    call mpi_ibcast(radarobs(obs_type)%alt, nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
+                    call mpi_ibcast(radarobs % alt, nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
                     call request_append
-                    call mpi_iallgatherv(             local_omb, sendcount,         mpi_real, &
-                                         radarobs(obs_type)%omb, recvcount, displs, mpi_real, mpi_comm_world, req_ptr%req, mpierr )
+                    call mpi_iallgatherv(     local_hdxb, sendcount,         mpi_real, &
+                                         radarobs % hdxb, recvcount, displs, mpi_real, mpi_comm_world, req_ptr%req, mpierr )
 
-                    if(allocated(local_omb)) deallocate(local_omb)
+                    if(allocated(local_hdxb)) deallocate(local_hdxb)
                 end if
-            end do
-        end associate
+            end associate
+        end do
 
         deallocate(i4_nobs)
     end subroutine radar_distribute
@@ -198,31 +195,27 @@ contains
         integer                      :: n
 
         if(myid == id) then
-
-        associate( radarobs => self % radarobs )
             do ifile = 0, nmember-1
                 write(proc, '(i3.3)') ifile+1
                 do obs_type = 1, num_radar_indexes
-                    nobs = radarobs(obs_type)%nobs
-                    if(nobs > 0) then
-                        open(40, file=obs_names(obs_type)//'_out_'//proc, iostat=ierr)
+                    associate( radarobs => self % radarobs(obs_type) )
+                        nobs = radarobs % nobs
+                        if(nobs > 0) then
+                            open(40, file=obs_names(obs_type)//'_out_'//proc, iostat=ierr)
 
-                        write(40, '(i10)', iostat=ierr) nobs
-                        do n = 1, nobs
-                            write(40,'(5(f10.4,1x))')           &
-                                     radarobs(obs_type)%obs(n), &
-                                     radarobs(obs_type)%omb(n,ifile), &
-                                     radarobs(obs_type)%lon(n),   &
-                                     radarobs(obs_type)%lat(n),   &
-                                     radarobs(obs_type)%alt(n)
-                        end do
+                            write(40, '(i10)', iostat=ierr) nobs
+                            do n = 1, nobs
+                                write(40,'(5(f10.4,1x))')           &
+                                    radarobs % obs (n), radarobs % hdxb(n,ifile), &
+                                    radarobs % lon (n), radarobs % lat (n),       &
+                                    radarobs % alt (n)
+                            end do
 
-                        close(40)
-                    end if
+                            close(40)
+                        end if
+                    end associate
                 end do
             end do
-        end associate
-
         end if
 
     end subroutine write_radar

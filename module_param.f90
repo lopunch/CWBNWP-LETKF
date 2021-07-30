@@ -3,7 +3,7 @@ module param
 
     type, abstract :: obs_structure
         integer                          :: nobs = 0
-        real, dimension(:), allocatable  :: lat, lon
+        real, dimension(:), allocatable  :: lat, lon, alt
     end type obs_structure
 
 !--------------------------------------------------------------

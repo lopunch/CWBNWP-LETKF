@@ -7,26 +7,17 @@ module gts_omboma
     implicit none
 
     private
-    public  :: variables, gts_structure, wrfda_gts
-
-    type variables
-        integer                                 :: nlev
-        real, dimension(:), allocatable         :: h, pre
-
-        !===============================================
-        real,     dimension(:,:),   allocatable :: obs       ![nvar, nlev]
-        real,     dimension(:,:),   allocatable :: error     ![nvar, nlev]
-        real,     dimension(:,:,:), allocatable :: omb       ![nvar, nlev, nmember]      
-        integer,  dimension(:,:,:), allocatable :: qc        ![nvar, nlev, nmember]
-    end type variables
+    public  :: gts_structure, wrfda_gts
 
     type, extends(obs_structure) :: gts_structure
-        character(len=5), dimension(:), allocatable  :: id
+        character(len=5), dimension(:),     allocatable :: id
+        real,             dimension(:),     allocatable :: pre
 
-        !obs on surface
-        type(variables),                allocatable  :: surf          !dim is number of data
-        !obs have vertical profile
-        type(variables),  dimension(:), allocatable  :: vert          !dim is number of data
+        !===============================================
+        real,             dimension(:,:),   allocatable :: obs       ![nvar, nobs]
+        real,             dimension(:,:),   allocatable :: error     ![nvar, nobs]
+        real,             dimension(:,:,:), allocatable :: hdxb      ![nvar, nobs, nmember]      
+        integer,          dimension(:,:,:), allocatable :: qc        ![nvar, nobs, nmember]
     end type gts_structure
 
     !========================================================================================
@@ -59,13 +50,25 @@ contains
         character(len=*), intent(in)     :: filename, obascii
 
         !local
-        type(alt_structure), dimension(num_gts_indexes)   :: gtsalt
+        type, extends(obs_structure) :: vert_structure
+            character(len=5)                        :: id
+            real,     dimension(:), allocatable     :: pre
+
+            !===============================================
+            real,     dimension(:,:),   allocatable :: obs       ![nvar, nobs]
+            real,     dimension(:,:),   allocatable :: error     ![nvar, nobs]
+            real,     dimension(:,:,:), allocatable :: hdxb      ![nvar, nobs, nmember]      
+            integer,  dimension(:,:,:), allocatable :: qc        ![nvar, nobs, nmember]
+        end type vert_structure
+
+        type(vert_structure), dimension(:), allocatable   :: vert
+        type(alt_structure),  dimension(num_gts_indexes)  :: gtsalt
 
         integer                                           :: ierr
         integer                                           :: nobs, nlev, obs_type
         character(len=20)                                 :: iv_type, obs_name
 
-        integer                                           :: n, k
+        integer                                           :: n, k, total
         integer                                           :: kk, l, nreq
         real, dimension(5)                                :: oma
         logical, parameter                                :: write_gts = .false.
@@ -77,343 +80,401 @@ contains
         if(ierr /= 0) stop "open gts_omboma error"
 
         if(write_gts) open(40, file='gts_out_'//filename(20:22), iostat=ierr)
-        associate( platform => self % platform )
-            report: do
-                read(30, '(a20,i8)', iostat=ierr) iv_type, nobs
-                if(ierr < 0) exit
-                if(ierr > 0) stop "read gts_omboma error"
-                obs_name = trim(adjustl(iv_type))
+        report: do
+            read(30, '(a20,i8)', iostat=ierr) iv_type, nobs
+            if(ierr < 0) exit
+            if(ierr > 0) stop "read gts_omboma error"
+            obs_name = trim(adjustl(iv_type))
 
-                if(write_gts) write(40, '(a20,i8)', iostat=ierr) iv_type, nobs
+            if(write_gts) write(40, '(a20,i8)', iostat=ierr) iv_type, nobs
 
-                select case (trim(obs_name))
-                case ('synop', 'ships', 'buoy', 'metar', 'sonde_sfc', 'tamdar_sfc')
-                    if(nobs > 0) then
-                        select case (trim(obs_name))    
-                        case ('synop') 
-                            obs_type = synop 
-                        case ('ships') 
-                            obs_type = ships 
-                        case ('buoy') 
-                            obs_type = buoy
-                        case ('metar') 
-                            obs_type = metar
-                        case ('sonde_sfc') 
-                            obs_type = sonde_sfc
-                        case ('tamdar_sfc') 
-                            obs_type = tamdar_sfc
-                        end select
+            select case (trim(obs_name))
+            case ('synop', 'ships', 'buoy', 'metar', 'sonde_sfc', 'tamdar_sfc')
+                if(nobs > 0) then
+                    select case (trim(obs_name))    
+                    case ('synop') 
+                        obs_type = synop 
+                    case ('ships') 
+                        obs_type = ships 
+                    case ('buoy') 
+                        obs_type = buoy
+                    case ('metar') 
+                        obs_type = metar
+                    case ('sonde_sfc') 
+                        obs_type = sonde_sfc
+                    case ('tamdar_sfc') 
+                        obs_type = tamdar_sfc
+                    end select
 
-                        platform(obs_type)%nobs = nobs 
-                        allocate(platform(obs_type)%id (nobs), &
-                                 platform(obs_type)%lat(nobs), &
-                                 platform(obs_type)%lon(nobs))
-
-                        allocate(platform(obs_type)%surf)
-                        allocate(platform(obs_type)%surf%h    (nobs), &
-                                 platform(obs_type)%surf%pre  (nobs), &
-                                 platform(obs_type)%surf%obs  (5,nobs),         &
-                                 platform(obs_type)%surf%error(5,nobs),         &
-                                 platform(obs_type)%surf%omb  (5,nobs,0:nmember-1),         &
-                                 platform(obs_type)%surf%qc   (5,nobs,0:nmember-1))
+                    associate( platform => self % platform(obs_type) )
+                        platform % nobs = nobs 
+                        allocate(platform % id   (nobs), &
+                                 platform % lat  (nobs), &
+                                 platform % lon  (nobs), &
+                                 platform % alt  (nobs), &
+                                 platform % pre  (nobs), &
+                                 platform % obs  (5,nobs),         &
+                                 platform % error(5,nobs),         &
+                                 platform % hdxb (5,nobs,0:nmember-1),         &
+                                 platform % qc   (5,nobs,0:nmember-1))
 
                         do n = 1, nobs 
                             read(30, '(2i8)') nlev, nreq
                             if(write_gts) write(40, '(2i8)') nlev, nreq
 
-                            read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                kk, l, platform(obs_type)%id(n), &
-                                platform(obs_type)%lat(n),  &
-                                platform(obs_type)%lon(n),  &   
-                                platform(obs_type)%surf%pre(n),                                             &
-                                platform(obs_type)%surf%obs(1,n),   platform(obs_type)%surf%omb  (1,n,0),       &
-                                platform(obs_type)%surf%qc (1,n,0), platform(obs_type)%surf%error(1,n),       &
-                                oma(1),                        &
-                                platform(obs_type)%surf%obs(2,n),   platform(obs_type)%surf%omb  (2,n,0),       &
-                                platform(obs_type)%surf%qc (2,n,0), platform(obs_type)%surf%error(2,n),       &
-                                oma(2),                        &
-                                platform(obs_type)%surf%obs(3,n),   platform(obs_type)%surf%omb  (3,n,0),       &
-                                platform(obs_type)%surf%qc (3,n,0), platform(obs_type)%surf%error(3,n),       &
-                                oma(3),                      &
-                                platform(obs_type)%surf%obs(4,n),   platform(obs_type)%surf%omb  (4,n,0),       &
-                                platform(obs_type)%surf%qc (4,n,0), platform(obs_type)%surf%error(4,n),       &
-                                oma(4),                      &
-                                platform(obs_type)%surf%obs(5,n),   platform(obs_type)%surf%omb  (5,n,0),       &
-                                platform(obs_type)%surf%qc (5,n,0), platform(obs_type)%surf%error(5,n),       &
-                                oma(5)
+                            read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
+                                platform % id (n),     platform % lat(n),  &
+                                platform % lon(n),     platform % pre(n),  &
+                                platform % obs(1,n),   platform % hdxb (1,n,0),       &
+                                platform % qc (1,n,0), platform % error(1,n), oma(1),         &
+                                platform % obs(2,n),   platform % hdxb (2,n,0),       &
+                                platform % qc (2,n,0), platform % error(2,n), oma(2),         &
+                                platform % obs(3,n),   platform % hdxb (3,n,0),       &
+                                platform % qc (3,n,0), platform % error(3,n), oma(3),         &
+                                platform % obs(4,n),   platform % hdxb (4,n,0),       &
+                                platform % qc (4,n,0), platform % error(4,n), oma(4),         &
+                                platform % obs(5,n),   platform % hdxb (5,n,0),       &
+                                platform % qc (5,n,0), platform % error(5,n), oma(5)
 
-                            platform(obs_type)%surf%h(n) = get_alt(gtsalt(obs_type), platform(obs_type)%id(n), 1)
+                            platform % alt(n) = get_alt(gtsalt(obs_type), platform % id(n), 1)
 
                             if(write_gts) &
-                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                    kk, l, platform(obs_type)%id(n), &
-                                    platform(obs_type)%lat(n),  &
-                                    platform(obs_type)%lon(n),  &   
-                                    platform(obs_type)%surf%pre(n),                                             &
-                                    platform(obs_type)%surf%obs(1,n),   platform(obs_type)%surf%omb  (1,n,0),       &
-                                    platform(obs_type)%surf%qc (1,n,0), platform(obs_type)%surf%error(1,n),       &
-                                    oma(1),                        &
-                                    platform(obs_type)%surf%obs(2,n),   platform(obs_type)%surf%omb  (2,n,0),       &
-                                    platform(obs_type)%surf%qc (2,n,0), platform(obs_type)%surf%error(2,n),       &
-                                    oma(2),                        &
-                                    platform(obs_type)%surf%obs(3,n),   platform(obs_type)%surf%omb  (3,n,0),       &
-                                    platform(obs_type)%surf%qc (3,n,0), platform(obs_type)%surf%error(3,n),       &
-                                    oma(3),                      &
-                                    platform(obs_type)%surf%obs(4,n),   platform(obs_type)%surf%omb  (4,n,0),       &
-                                    platform(obs_type)%surf%qc (4,n,0), platform(obs_type)%surf%error(4,n),       &
-                                    oma(4),                      &
-                                    platform(obs_type)%surf%obs(5,n),   platform(obs_type)%surf%omb  (5,n,0),       &
-                                    platform(obs_type)%surf%qc (5,n,0), platform(obs_type)%surf%error(5,n),       &
-                                    oma(5)
+                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
+                                    platform % id (n),     platform % lat(n),  &
+                                    platform % lon(n),     platform % pre(n),  &
+                                    platform % obs(1,n),   platform % hdxb (1,n,0),       &
+                                    platform % qc (1,n,0), platform % error(1,n), oma(1),         &
+                                    platform % obs(2,n),   platform % hdxb (2,n,0),       &
+                                    platform % qc (2,n,0), platform % error(2,n), oma(2),         &
+                                    platform % obs(3,n),   platform % hdxb (3,n,0),       &
+                                    platform % qc (3,n,0), platform % error(3,n), oma(3),         &
+                                    platform % obs(4,n),   platform % hdxb (4,n,0),       &
+                                    platform % qc (4,n,0), platform % error(4,n), oma(4),         &
+                                    platform % obs(5,n),   platform % hdxb (5,n,0),       &
+                                    platform % qc (5,n,0), platform % error(5,n), oma(5)
                         end do  !nobs
 
-                        !bg = obs - omb
-                        platform(obs_type)%surf%omb(:,:,0) = platform(obs_type)%surf%obs - platform(obs_type)%surf%omb(:,:,0)
-                    end if
-                case ('pilot', 'profiler', 'geoamv', 'qscat', 'polaramv')    
-                    if(nobs > 0) then
-                        select case (trim(obs_name))    
-                        case ('pilot') 
-                            obs_type = pilot
-                        case ('profiler') 
-                            obs_type = profiler
-                        case ('geoamv') 
-                            obs_type = geoamv
-                        case ('qscat') 
-                            obs_type = qscat
-                        case ('polaramv') 
-                            obs_type = polaramv
-                        end select
+                        !hdxb = obs - omb
+                        platform % hdxb(:,:,0) = platform % obs - platform % hdxb(:,:,0)
+                    end associate
+                end if
+            case ('pilot', 'profiler', 'geoamv', 'qscat', 'polaramv')    
+                if(nobs > 0) then
+                    select case (trim(obs_name))    
+                    case ('pilot') 
+                        obs_type = pilot
+                    case ('profiler') 
+                        obs_type = profiler
+                    case ('geoamv') 
+                        obs_type = geoamv
+                    case ('qscat') 
+                        obs_type = qscat
+                    case ('polaramv') 
+                        obs_type = polaramv
+                    end select
 
-                        platform(obs_type)%nobs  = nobs 
-                        allocate(platform(obs_type)%id  (nobs), &
-                                 platform(obs_type)%lat (nobs), &
-                                 platform(obs_type)%lon (nobs), &
-                                 platform(obs_type)%vert(nobs))
+                    total = 0
+                    allocate(vert(nobs))
+                    
+                    do n = 1, nobs 
+                        read(30,'(2i8)') nlev, nreq
+                        vert(n) % nobs = nlev
+
+                        if(write_gts) write(40,'(2i8)') nlev, nreq
+
+                        allocate(vert(n) % lat  (nlev), &
+                                 vert(n) % lon  (nlev), &  
+                                 vert(n) % alt  (nlev), &
+                                 vert(n) % pre  (nlev), &
+                                 vert(n) % obs  (2,nlev), &
+                                 vert(n) % error(2,nlev), &
+                                 vert(n) % hdxb (2,nlev,0:nmember-1), &
+                                 vert(n) % qc   (2,nlev,0:nmember-1))
+
+                        do k = 1, nlev
+                            total = total + 1
+
+                            read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
+                                vert(n) % id,         vert(n) % lat(k),    &
+                                vert(n) % lon(k),     vert(n) % pre(k),    &
+                                vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),       &
+                                vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1),                  &
+                                vert(n) % obs(2,k),   vert(n) % hdxb (2,k,0),       &
+                                vert(n) % qc (2,k,0), vert(n) % error(2,k), oma(2)
+
+                            vert(n) % alt(k) = get_alt(gtsalt(obs_type), vert(n) % id, k)
+                           !if(k == 1) platform(obs_type)%xy(:,n) = latlon_to_dist( [lat, lon] )
+
+                            if(write_gts)  &
+                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
+                                    vert(n) % id,         vert(n) % lat(k),    &
+                                    vert(n) % lon(k),     vert(n) % pre(k),    &
+                                    vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),       &
+                                    vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1),                  &
+                                    vert(n) % obs(2,k),   vert(n) % hdxb (2,k,0),       &
+                                    vert(n) % qc (2,k,0), vert(n) % error(2,k), oma(2)
+
+                        end do   !nlev
+
+                        !hdxb = obs - omb
+                        vert(n) % hdxb(:,:,0) = vert(n) % obs - vert(n) % hdxb(:,:,0)
+                    end do  !nobs
+
+                    !=======================================================================
+
+                    !put data from vert to platform
+                    associate( platform => self % platform(obs_type) )
+                        platform % nobs = total
+                        allocate(platform % id   (total), &
+                                 platform % lat  (total), &
+                                 platform % lon  (total), &
+                                 platform % alt  (total), &
+                                 platform % pre  (total), &
+                                 platform % obs  (2,total),         &
+                                 platform % error(2,total),         &
+                                 platform % hdxb (2,total,0:nmember-1),         &
+                                 platform % qc   (2,total,0:nmember-1))
+
+                        total = 0
+
+                        do n = 1, nobs 
+                        do k = 1, vert(n) % nobs
+                            total = total + 1
+                            platform % id   (total)     = vert(n) % id
+                            platform % lat  (total)     = vert(n) % lat(k)
+                            platform % lon  (total)     = vert(n) % lon(k)
+                            platform % alt  (total)     = vert(n) % alt(k)
+                            platform % pre  (total)     = vert(n) % pre(k)
+                            platform % obs  (:,total)   = vert(n) % obs  (:,k)
+                            platform % error(:,total)   = vert(n) % error(:,k)
+                            platform % hdxb (:,total,0) = vert(n) % hdxb (:,k,0)
+                            platform % qc   (:,total,0) = vert(n) % qc   (:,k,0)
+                        end do
+                        end do
+                    end associate
+
+                    deallocate(vert)
+
+                end if
+            case ('gpspw')
+                if(nobs > 0) then
+                    obs_type = gpspw
+
+                    associate( platform => self % platform(obs_type) )
+                        platform % nobs  = nobs 
+                        allocate(platform % id (nobs), &
+                                 platform % lat(nobs), &
+                                 platform % lon(nobs), &
+                                 platform % alt(nobs), &
+                                 platform % obs  (1,nobs), &
+                                 platform % error(1,nobs), &
+                                 platform % hdxb (1,nobs,0:nmember-1), &
+                                 platform % qc   (1,nobs,0:nmember-1))
                         
                         do n = 1, nobs 
                             read(30,'(2i8)') nlev, nreq
-                            platform(obs_type)%vert(n)%nlev = nlev
-
                             if(write_gts) write(40,'(2i8)') nlev, nreq
 
-                            allocate(platform(obs_type)%vert(n)%pre(nlev), &
-                                     platform(obs_type)%vert(n)%h  (nlev), &
-                                     platform(obs_type)%vert(n)%obs  (2,nlev), &
-                                     platform(obs_type)%vert(n)%error(2,nlev), &
-                                     platform(obs_type)%vert(n)%omb  (2,nlev,0:nmember-1), &
-                                     platform(obs_type)%vert(n)%qc   (2,nlev,0:nmember-1))
-
-                            do k = 1, nlev
-                                read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                    kk, l, platform(obs_type)%id(n), &
-                                    platform(obs_type)%lat(n),  &
-                                    platform(obs_type)%lon(n),  &   
-                                    platform(obs_type)%vert(n)%pre(k),                                          &
-                                    platform(obs_type)%vert(n)%obs(1,k),    platform(obs_type)%vert(n)%omb  (1,k,0),       &
-                                    platform(obs_type)%vert(n)%qc (1,k,0),  platform(obs_type)%vert(n)%error(1,k),       &
-                                    oma(1),                                     &
-                                    platform(obs_type)%vert(n)%obs(2,k),    platform(obs_type)%vert(n)%omb  (2,k,0),       &
-                                    platform(obs_type)%vert(n)%qc (2,k,0),  platform(obs_type)%vert(n)%error(2,k),       &
-                                    oma(2)
-
-                                platform(obs_type)%vert(n)%h(k) = get_alt(gtsalt(obs_type), platform(obs_type)%id(n), k)
-                               !if(k == 1) platform(obs_type)%xy(:,n) = latlon_to_dist( [lat, lon] )
-
-                                if(write_gts)  &
-                                    write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                        kk, l, platform(obs_type)%id(n), &
-                                        platform(obs_type)%lat(n),  &
-                                        platform(obs_type)%lon(n),  &   
-                                        platform(obs_type)%vert(n)%pre(k),                                          &
-                                        platform(obs_type)%vert(n)%obs(1,k),    platform(obs_type)%vert(n)%omb  (1,k,0),       &
-                                        platform(obs_type)%vert(n)%qc (1,k,0),  platform(obs_type)%vert(n)%error(1,k),       &
-                                        oma(1),                                     &
-                                        platform(obs_type)%vert(n)%obs(2,k),    platform(obs_type)%vert(n)%omb  (2,k,0),       &
-                                        platform(obs_type)%vert(n)%qc (2,k,0),  platform(obs_type)%vert(n)%error(2,k),       &
-                                        oma(2)
-
-                            end do   !nlev
-
-                            !bg = obs - omb
-                            platform(obs_type)%vert(n)%omb(:,:,0) = platform(obs_type)%vert(n)%obs - platform(obs_type)%vert(n)%omb(:,:,0)
-                        end do  !nobs
-                    end if
-                case ('gpspw')
-                    if(nobs > 0) then
-                        obs_type = gpspw
-
-                        platform(obs_type)%nobs  = nobs 
-                        allocate(platform(obs_type)%id (nobs), &
-                                 platform(obs_type)%lat(nobs), &
-                                 platform(obs_type)%lon(nobs))
-
-                        allocate(platform(obs_type)%surf)
-                        allocate(platform(obs_type)%surf%h(nobs),   &
-                                 platform(obs_type)%surf%obs  (1,nobs), &
-                                 platform(obs_type)%surf%error(1,nobs), &
-                                 platform(obs_type)%surf%omb  (1,nobs,0:nmember-1), &
-                                 platform(obs_type)%surf%qc   (1,nobs,0:nmember-1))
-                        
-                        do n = 1, nobs 
-                            read(30,'(2i8)') nlev, nreq
-                            if(write_gts) write(40,'(2i8)') nlev, nreq
-
-                            read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                kk, l, platform(obs_type)%id(n), &
-                                platform(obs_type)%lat(n),  &
-                                platform(obs_type)%lon(n),  &   
-                                platform(obs_type)%surf%h  (n),                                              &
-                                platform(obs_type)%surf%obs(1,n),    platform(obs_type)%surf%omb  (1,n,0),     &
-                                platform(obs_type)%surf%qc (1,n,0),  platform(obs_type)%surf%error(1,n),     &
-                                oma(1)
+                            read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
+                                platform % id (n),     platform % lat(n),  &
+                                platform % lon(n),     platform % alt(n),  &
+                                platform % obs(1,n),   platform % hdxb (1,n,0),     &
+                                platform % qc (1,n,0), platform % error(1,n), oma(1)
 
                            !platform(obs_type)%xy(:,n) = latlon_to_dist( [lat, lon] )
 
                             if(write_gts) &
-                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                    kk, l, platform(obs_type)%id(n), &
-                                    platform(obs_type)%lat(n),  &
-                                    platform(obs_type)%lon(n),  &   
-                                    platform(obs_type)%surf%h  (n),                                              &
-                                    platform(obs_type)%surf%obs(1,n),    platform(obs_type)%surf%omb  (1,n,0),     &
-                                    platform(obs_type)%surf%qc (1,n,0),  platform(obs_type)%surf%error(1,n),     &
-                                    oma(1)
+                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
+                                    platform % id (n),     platform % lat(n),  &
+                                    platform % lon(n),     platform % alt(n),  &
+                                    platform % obs(1,n),   platform % hdxb (1,n,0),     &
+                                    platform % qc (1,n,0), platform % error(1,n), oma(1)
 
                         end do  !nobs
 
-                        !bg = obs - omb
-                        platform(obs_type)%surf%omb(:,:,0) = platform(obs_type)%surf%obs - platform(obs_type)%surf%omb(:,:,0)
-                    end if
-                case ('sound', 'tamdar', 'airep')
-                    if(nobs > 0) then
-                        select case (trim(obs_name))    
-                        case ('sound') 
-                            obs_type = sound
-                        case ('tamdar') 
-                            obs_type = tamdar
-                        case ('airep') 
-                            obs_type = airep
-                        end select
+                        !hdxb = obs - omb
+                        platform % hdxb(:,:,0) = platform % obs - platform % hdxb(:,:,0)
+                    end associate
+                end if
+            case ('sound', 'tamdar', 'airep')
+                if(nobs > 0) then
+                    select case (trim(obs_name))
+                    case ('sound') 
+                        obs_type = sound
+                    case ('tamdar') 
+                        obs_type = tamdar
+                    case ('airep') 
+                        obs_type = airep
+                    end select
 
-                        platform(obs_type)%nobs  = nobs 
-                        allocate(platform(obs_type)%id  (nobs), &
-                                 platform(obs_type)%lat (nobs), &
-                                 platform(obs_type)%lon (nobs), &
-                                 platform(obs_type)%vert(nobs))
-                        
-                        do n = 1, nobs 
-                            read(30,'(2i8)') nlev, nreq
-                            platform(obs_type)%vert(n)%nlev = nlev
+                    total = 0
+                    allocate(vert(nobs))
+                    
+                    do n = 1, nobs 
+                        read(30,'(2i8)') nlev, nreq
+                        vert(n) % nobs = nlev
 
-                            if(write_gts) write(40,'(2i8)') nlev, nreq
+                        if(write_gts) write(40,'(2i8)') nlev, nreq
 
-                            allocate(platform(obs_type)%vert(n)%pre(nlev), &
-                                     platform(obs_type)%vert(n)%h  (nlev), &
-                                     platform(obs_type)%vert(n)%obs  (4,nlev), &
-                                     platform(obs_type)%vert(n)%error(4,nlev), &
-                                     platform(obs_type)%vert(n)%omb  (4,nlev,0:nmember-1), &
-                                     platform(obs_type)%vert(n)%qc   (4,nlev,0:nmember-1))
+                        allocate(vert(n) % lat  (nlev), &
+                                 vert(n) % lon  (nlev), &  
+                                 vert(n) % alt  (nlev), &
+                                 vert(n) % pre  (nlev), &
+                                 vert(n) % obs  (4,nlev), &
+                                 vert(n) % error(4,nlev), &
+                                 vert(n) % hdxb (4,nlev,0:nmember-1), &
+                                 vert(n) % qc   (4,nlev,0:nmember-1))
 
-                            do k = 1, nlev
-                                read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                    kk, l, platform(obs_type)%id(n), &
-                                    platform(obs_type)%lat(n),  &
-                                    platform(obs_type)%lon(n),  &   
-                                    platform(obs_type)%vert(n)%pre(k),                                          &
-                                    platform(obs_type)%vert(n)%obs(1,k),    platform(obs_type)%vert(n)%omb  (1,k,0),       &
-                                    platform(obs_type)%vert(n)%qc (1,k,0),  platform(obs_type)%vert(n)%error(1,k),       &
-                                    oma(1),                                     &
-                                    platform(obs_type)%vert(n)%obs(2,k),    platform(obs_type)%vert(n)%omb  (2,k,0),       &
-                                    platform(obs_type)%vert(n)%qc (2,k,0),  platform(obs_type)%vert(n)%error(2,k),       &
-                                    oma(2),                                     &
-                                    platform(obs_type)%vert(n)%obs(3,k),    platform(obs_type)%vert(n)%omb  (3,k,0),       &
-                                    platform(obs_type)%vert(n)%qc (3,k,0),  platform(obs_type)%vert(n)%error(3,k),       &
-                                    oma(1),                                     &
-                                    platform(obs_type)%vert(n)%obs(4,k),    platform(obs_type)%vert(n)%omb  (4,k,0),       &
-                                    platform(obs_type)%vert(n)%qc (4,k,0),  platform(obs_type)%vert(n)%error(4,k),       &
-                                    oma(2)
+                        do k = 1, nlev
+                            total = total + 1
+                            read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
+                                vert(n) % id,         vert(n) % lat(k),    &
+                                vert(n) % lon(k),     vert(n) % pre(k),    &
+                                vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),       &
+                                vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1),                  &
+                                vert(n) % obs(2,k),   vert(n) % hdxb (2,k,0),       &
+                                vert(n) % qc (2,k,0), vert(n) % error(2,k), oma(2),                  &
+                                vert(n) % obs(3,k),   vert(n) % hdxb (3,k,0),       &
+                                vert(n) % qc (3,k,0), vert(n) % error(3,k), oma(3),                  &
+                                vert(n) % obs(4,k),   vert(n) % hdxb (4,k,0),       &
+                                vert(n) % qc (4,k,0), vert(n) % error(4,k), oma(4)
 
-                                platform(obs_type)%vert(n)%h(k) = get_alt(gtsalt(obs_type), platform(obs_type)%id(n), k)
-                               !if(k == 1) platform(obs_type)%xy(:,n) = latlon_to_dist( [lat, lon] )
+                            vert(n) % alt(k) = get_alt(gtsalt(obs_type), vert(n) % id, k)
+                           !if(k == 1) platform(obs_type)%xy(:,n) = latlon_to_dist( [lat, lon] )
 
-                                if(write_gts) &
-                                    write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                        kk, l, platform(obs_type)%id(n), &
-                                        platform(obs_type)%lat(n),  &
-                                        platform(obs_type)%lon(n),  &   
-                                        platform(obs_type)%vert(n)%pre(k),                                          &
-                                        platform(obs_type)%vert(n)%obs(1,k),    platform(obs_type)%vert(n)%omb  (1,k,0),       &
-                                        platform(obs_type)%vert(n)%qc (1,k,0),  platform(obs_type)%vert(n)%error(1,k),       &
-                                        oma(1),                                     &
-                                        platform(obs_type)%vert(n)%obs(2,k),    platform(obs_type)%vert(n)%omb  (2,k,0),       &
-                                        platform(obs_type)%vert(n)%qc (2,k,0),  platform(obs_type)%vert(n)%error(2,k),       &
-                                        oma(2),                                     &
-                                        platform(obs_type)%vert(n)%obs(3,k),    platform(obs_type)%vert(n)%omb  (3,k,0),       &
-                                        platform(obs_type)%vert(n)%qc (3,k,0),  platform(obs_type)%vert(n)%error(3,k),       &
-                                        oma(1),                                     &
-                                        platform(obs_type)%vert(n)%obs(4,k),    platform(obs_type)%vert(n)%omb  (4,k,0),       &
-                                        platform(obs_type)%vert(n)%qc (4,k,0),  platform(obs_type)%vert(n)%error(4,k),       &
-                                        oma(2)
+                            if(write_gts) &
+                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
+                                    vert(n) % id,         vert(n) % lat(k),    &
+                                    vert(n) % lon(k),     vert(n) % pre(k),    &
+                                    vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),       &
+                                    vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1),                  &
+                                    vert(n) % obs(2,k),   vert(n) % hdxb (2,k,0),       &
+                                    vert(n) % qc (2,k,0), vert(n) % error(2,k), oma(2),                  &
+                                    vert(n) % obs(3,k),   vert(n) % hdxb (3,k,0),       &
+                                    vert(n) % qc (3,k,0), vert(n) % error(3,k), oma(3),                  &
+                                    vert(n) % obs(4,k),   vert(n) % hdxb (4,k,0),       &
+                                    vert(n) % qc (4,k,0), vert(n) % error(4,k), oma(4)
+                        end do   !nlev
 
-                            end do   !nlev
+                        !hdxb = obs - omb
+                        vert(n) % hdxb(:,:,0) = vert(n) % obs - vert(n) % hdxb(:,:,0)
+                    end do  !nobs
 
-                            !bg = obs - omb
-                            platform(obs_type)%vert(n)%omb(:,:,0) = platform(obs_type)%vert(n)%obs - platform(obs_type)%vert(n)%omb(:,:,0)
-                        end do  !nobs
-                    end if
-                case ('gpsref')
-                    if(nobs > 0) then
-                        obs_type = gpsref
+                    !=======================================================================
 
-                        platform(obs_type)%nobs  = nobs 
-                        allocate(platform(obs_type)%id  (nobs), &
-                                 platform(obs_type)%lat (nobs), &
-                                 platform(obs_type)%lon (nobs), &
-                                 platform(obs_type)%vert(nobs))
+                    !put data from vert to platform
+                    associate( platform => self % platform(obs_type) )
+                        platform % nobs = total
+                        allocate(platform % id   (total), &
+                                 platform % lat  (total), &
+                                 platform % lon  (total), &
+                                 platform % alt  (total), &
+                                 platform % pre  (total), &
+                                 platform % obs  (4,total),         &
+                                 platform % error(4,total),         &
+                                 platform % hdxb (4,total,0:nmember-1),         &
+                                 platform % qc   (4,total,0:nmember-1))
+
+                        total = 0
 
                         do n = 1, nobs 
-                            read(30,'(2i8)') nlev, nreq
-                            platform(obs_type)%vert(n)%nlev = nlev
-                        
-                            if(write_gts) write(40,'(2i8)') nlev, nreq
+                        do k = 1, vert(n) % nobs
+                            total = total + 1
+                            platform % id   (total)     = vert(n) % id
+                            platform % lat  (total)     = vert(n) % lat(k)
+                            platform % lon  (total)     = vert(n) % lon(k)
+                            platform % alt  (total)     = vert(n) % alt(k)
+                            platform % pre  (total)     = vert(n) % pre(k)
+                            platform % obs  (:,total)   = vert(n) % obs  (:,k)
+                            platform % error(:,total)   = vert(n) % error(:,k)
+                            platform % hdxb (:,total,0) = vert(n) % hdxb (:,k,0)
+                            platform % qc   (:,total,0) = vert(n) % qc   (:,k,0)
+                        end do
+                        end do
 
-                            allocate(platform(obs_type)%vert(n)%h(nlev), &
-                                     platform(obs_type)%vert(n)%obs  (1,nlev), &
-                                     platform(obs_type)%vert(n)%error(1,nlev), &
-                                     platform(obs_type)%vert(n)%omb  (1,nlev,0:nmember-1), &
-                                     platform(obs_type)%vert(n)%qc   (1,nlev,0:nmember-1))
+                        deallocate(vert)
+                    end associate
 
-                            do k = 1, nlev
-                                read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                    kk, l, platform(obs_type)%id(n), &
-                                    platform(obs_type)%lat(n),  &
-                                    platform(obs_type)%lon(n),  &   
-                                    platform(obs_type)%vert(n)%h  (k),                                              &
-                                    platform(obs_type)%vert(n)%obs(1,k),    platform(obs_type)%vert(n)%omb  (1,k,0),     &
-                                    platform(obs_type)%vert(n)%qc (1,k,0),  platform(obs_type)%vert(n)%error(1,k),     &
-                                    oma(1)
+                end if
+            case ('gpsref')
+                if(nobs > 0) then
+                    obs_type = gpsref
 
-                               !platform(obs_type)%xy(:,n) = latlon_to_dist( [lat, lon] )
+                    total = 0
+                    allocate(vert(nobs))
 
-                                if(write_gts) &
-                                    write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                        kk, l, platform(obs_type)%id(n), &
-                                        platform(obs_type)%lat(n),  &
-                                        platform(obs_type)%lon(n),  &   
-                                        platform(obs_type)%vert(n)%h  (k),                                              &
-                                        platform(obs_type)%vert(n)%obs(1,k),    platform(obs_type)%vert(n)%omb  (1,k,0),     &
-                                        platform(obs_type)%vert(n)%qc (1,k,0),  platform(obs_type)%vert(n)%error(1,k),     &
-                                        oma(1)
-                            end do
+                    do n = 1, nobs 
+                        read(30,'(2i8)') nlev, nreq
+                        vert(n) % nobs = nlev
+                    
+                        if(write_gts) write(40,'(2i8)') nlev, nreq
 
-                            !bg = obs - omb
-                            platform(obs_type)%vert(n)%omb(:,:,0) = platform(obs_type)%vert(n)%obs - platform(obs_type)%vert(n)%omb(:,:,0)
-                        end do  !nobs
-                    end if
-                end select
-            end do report
-        end associate
+                        allocate(vert(n) % lat  (nlev), &
+                                 vert(n) % lon  (nlev), &  
+                                 vert(n) % alt  (nlev), &
+                                 vert(n) % obs  (1,nlev), &
+                                 vert(n) % error(1,nlev), &
+                                 vert(n) % hdxb (1,nlev,0:nmember-1), &
+                                 vert(n) % qc   (1,nlev,0:nmember-1))
+
+                        do k = 1, nlev
+                            total = total + 1
+                            read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
+                                vert(n) % id,         vert(n) % lat(k),    &
+                                vert(n) % lon(k),     vert(n) % alt(k),    &
+                                vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),     &
+                                vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1)
+
+                           !platform(obs_type)%xy(:,n) = latlon_to_dist( [lat, lon] )
+
+                            if(write_gts) &
+                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
+                                    vert(n) % id,         vert(n) % lat(k),    &
+                                    vert(n) % lon(k),     vert(n) % alt(k),    &
+                                    vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),     &
+                                    vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1)
+                        end do
+
+                        !hdxb = obs - omb
+                        vert(n) % hdxb(:,:,0) = vert(n) % obs - vert(n) % hdxb(:,:,0)
+                    end do  !nobs
+
+                    !=======================================================================
+
+                    !put data from vert to platform
+                    associate( platform => self % platform(obs_type) )
+                        platform % nobs = total
+                        allocate(platform % id   (total), &
+                                 platform % lat  (total), &
+                                 platform % lon  (total), &
+                                 platform % alt  (total), &
+                                 platform % obs  (1,total),         &
+                                 platform % error(1,total),         &
+                                 platform % hdxb (1,total,0:nmember-1),         &
+                                 platform % qc   (1,total,0:nmember-1))
+
+                        total = 0
+
+                        do n = 1, nobs 
+                        do k = 1, vert(n) % nobs
+                            total = total + 1
+                            platform % id   (total)     = vert(n) % id
+                            platform % lat  (total)     = vert(n) % lat(k)
+                            platform % lon  (total)     = vert(n) % lon(k)
+                            platform % alt  (total)     = vert(n) % alt(k)
+                            platform % obs  (:,total)   = vert(n) % obs  (:,k)
+                            platform % error(:,total)   = vert(n) % error(:,k)
+                            platform % hdxb (:,total,0) = vert(n) % hdxb (:,k,0)
+                            platform % qc   (:,total,0) = vert(n) % qc   (:,k,0)
+                        end do
+                        end do
+                    end associate
+
+                    deallocate(vert)
+
+                end if
+            end select
+        end do report
 
         close(30)
         if(write_gts) close(40)
@@ -426,333 +487,111 @@ contains
         integer,          intent(in)                   :: root
 
         !local
-        integer                                        :: obs_type, nobs, nlev
-        integer                                        :: n, k, m
+        integer                                        :: obs_type, nobs, nvar
+        integer                                        :: k, m
 
         !local mpi 
         integer,  dimension(0:nproc-1)                 :: recvcount, displs
         integer                                        :: mpierr, sendcount
-        integer,  dimension(:),     allocatable        :: i4_nobs, i4_nlev
+        integer,  dimension(:),     allocatable        :: i4_nobs
 
-        real,     dimension(:,:),   allocatable        :: local_omb
+        real,     dimension(:,:),   allocatable        :: local_hdxb
         integer,  dimension(:,:),   allocatable        :: local_qc
 
         !broadcast number of obs of each obs type
         allocate(i4_nobs(num_gts_indexes))
         if(myid == root) then
             do obs_type = 1, num_gts_indexes
-                i4_nobs(obs_type) = self%platform(obs_type)%nobs
+                i4_nobs(obs_type) = self % platform(obs_type) % nobs
             end do
         end if
 
         call mpi_bcast(i4_nobs, num_gts_indexes, mpi_integer, root, mpi_comm_world, mpierr)
 
         !start to exchange obs info
-        associate( platform => self % platform )
-            do obs_type = 1, num_gts_indexes
-                nobs = i4_nobs(obs_type)
-                platform(obs_type)%nobs = nobs
+        do obs_type = 1, num_gts_indexes
+            nobs = i4_nobs(obs_type)
+            associate( platform => self % platform(obs_type) )
+                platform % nobs = nobs
                 if(nobs > 0) then
 
-                    if(.not. allocated(platform(obs_type)%id)) then
-                        allocate(platform(obs_type)%id (nobs), &
-                                 platform(obs_type)%lat(nobs), &
-                                 platform(obs_type)%lon(nobs))
+                    if(.not. allocated(platform % id)) then
+                        allocate(platform % id (nobs), &
+                                 platform % lat(nobs), &
+                                 platform % lon(nobs), &
+                                 platform % alt(nobs))
                     end if
 
                     call request_append
-                    call mpi_ibcast(platform(obs_type)%id, 5*nobs, mpi_character, root, mpi_comm_world, req_ptr%req, mpierr)
+                    call mpi_ibcast(platform % id, 5*nobs, mpi_character, root, mpi_comm_world, req_ptr%req, mpierr)
                     call request_append
-                    call mpi_ibcast(platform(obs_type)%lat,  nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
+                    call mpi_ibcast(platform % lat,  nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
                     call request_append
-                    call mpi_ibcast(platform(obs_type)%lon,  nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
+                    call mpi_ibcast(platform % lon,  nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
+                    call request_append
+                    call mpi_ibcast(platform % alt,  nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
 
                     select case (obs_type)
                     case (synop, ships, buoy, metar, sonde_sfc, tamdar_sfc)
-                        if(allocated(platform(obs_type)%surf)) then
-                            allocate(local_omb(5,nobs), &
-                                     local_qc (5,nobs))
-
-                            local_omb = platform(obs_type)%surf%omb(:,:,0)
-                            local_qc  = platform(obs_type)%surf%qc (:,:,0)
-
-                            sendcount = 5 * nobs
-                        else
-                            allocate(platform(obs_type)%surf)
-                            allocate(platform(obs_type)%surf%h  (nobs), &
-                                     platform(obs_type)%surf%pre(nobs), &
-                                     platform(obs_type)%surf%obs  (5,nobs), &
-                                     platform(obs_type)%surf%error(5,nobs), &
-                                     platform(obs_type)%surf%omb  (5,nobs,0:nmember-1), &
-                                     platform(obs_type)%surf%qc   (5,nobs,0:nmember-1))
-
-                            sendcount = 0
-                        end if
-
-                        recvcount = 0
-                        displs    = 5 * nobs * nmember
-                        do k = 0, nmember-1
-                            m            = k+root
-                            recvcount(m) = 5 * nobs
-                            displs(m)    = k * 5 * nobs
-                        end do
-
-
-                        call request_append
-                        call mpi_ibcast(platform(obs_type)%surf%h,       nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                        call request_append
-                        call mpi_ibcast(platform(obs_type)%surf%pre,     nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                        call request_append
-                        call mpi_ibcast(platform(obs_type)%surf%obs,   5*nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                        call request_append
-                        call mpi_ibcast(platform(obs_type)%surf%error, 5*nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-
-                        call request_append
-                        call mpi_iallgatherv(                local_omb, sendcount,         mpi_real, &
-                                           platform(obs_type)%surf%omb, recvcount, displs, mpi_real, mpi_comm_world, req_ptr%req, mpierr)
-                        call request_append
-                        call mpi_iallgatherv(                local_qc, sendcount,         mpi_integer, &
-                                           platform(obs_type)%surf%qc, recvcount, displs, mpi_integer, mpi_comm_world, req_ptr%req, mpierr)
-
-                        if(allocated(local_omb)) deallocate(local_omb,  local_qc)
-
+                        nvar = 5
                     case (pilot, profiler, geoamv, qscat, polaramv)
-                        allocate(i4_nlev(nobs))
-                        if( allocated(platform(obs_type)%vert) ) then
-                            do n = 1, nobs
-                                i4_nlev(n) = platform(obs_type)%vert(n)%nlev
-                            end do
-                        else
-                            allocate(platform(obs_type)%vert(nobs))
-                        end if
-
-                        call mpi_bcast(i4_nlev, nobs, mpi_integer,     root, mpi_comm_world, mpierr)
-
-                        do n = 1, nobs
-                            nlev = i4_nlev(n)
-                            platform(obs_type)%vert(n)%nlev = nlev
-
-                            if(allocated(platform(obs_type)%vert(n)%pre)) then
-                                allocate(local_omb(2,nlev), &
-                                         local_qc (2,nlev))
-
-                                local_omb = platform(obs_type)%vert(n)%omb(:,:,0)
-                                local_qc  = platform(obs_type)%vert(n)%qc (:,:,0)
-
-                                sendcount = 2 * nlev
-                            else
-                                allocate(platform(obs_type)%vert(n)%h  (nlev), &
-                                         platform(obs_type)%vert(n)%pre(nlev), &
-                                         platform(obs_type)%vert(n)%obs  (2,nlev), &
-                                         platform(obs_type)%vert(n)%error(2,nlev), &
-                                         platform(obs_type)%vert(n)%omb  (2,nlev,0:nmember-1), &
-                                         platform(obs_type)%vert(n)%qc   (2,nlev,0:nmember-1))
-
-                                sendcount = 0
-                            end if
-
-                            recvcount = 0
-                            displs    = 2 * nlev * nmember
-                            do k = 0, nmember-1
-                                m            = k+root
-                                recvcount(m) = 2 * nlev
-                                displs(m)    = k * 2 * nlev
-                            end do
-
-                            call request_append
-                            call mpi_ibcast(platform(obs_type)%vert(n)%h,       nlev, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                            call request_append
-                            call mpi_ibcast(platform(obs_type)%vert(n)%pre,     nlev, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                            call request_append
-                            call mpi_ibcast(platform(obs_type)%vert(n)%obs,   2*nlev, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-
-                            call request_append
-                            call mpi_iallgatherv(                   local_omb, sendcount,         mpi_real, &
-                                               platform(obs_type)%vert(n)%omb, recvcount, displs, mpi_real, mpi_comm_world, req_ptr%req, mpierr)
-                            call request_append
-                            call mpi_iallgatherv(                   local_qc, sendcount,         mpi_integer, &
-                                               platform(obs_type)%vert(n)%qc, recvcount, displs, mpi_integer, mpi_comm_world, req_ptr%req, mpierr)
-
-                            if(allocated(local_omb)) deallocate(local_omb,  local_qc)
-
-                        end do
-
-                        deallocate(i4_nlev)
-                    case (gpspw)
-                        if( allocated(platform(obs_type)%surf) ) then
-                            allocate(local_omb  (1,nobs), &
-                                     local_qc   (1,nobs))
-
-                            local_omb = platform(obs_type)%surf%omb(:,:,0)
-                            local_qc  = platform(obs_type)%surf%qc (:,:,0)
-
-                            sendcount = nobs
-                        else
-                            allocate(platform(obs_type)%surf)
-                            allocate(platform(obs_type)%surf%h(nobs), &
-                                     platform(obs_type)%surf%obs  (1,nobs), &
-                                     platform(obs_type)%surf%error(1,nobs), &
-                                     platform(obs_type)%surf%omb  (1,nobs,0:nmember-1), &
-                                     platform(obs_type)%surf%qc   (1,nobs,0:nmember-1))
-
-                             sendcount = 0
-                        end if
-
-                        recvcount = 0
-                        displs    = nobs * nmember
-                        do k = 0, nmember-1
-                            m            = k+root
-                            recvcount(m) = nobs
-                            displs(m)    = k * nobs
-                        end do
-
-                        call request_append
-                        call mpi_ibcast(platform(obs_type)%surf%h,     nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                        call request_append
-                        call mpi_ibcast(platform(obs_type)%surf%obs,   nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                        call request_append
-                        call mpi_ibcast(platform(obs_type)%surf%error, nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-
-                        call request_append
-                        call mpi_iallgatherv(                local_omb, sendcount,         mpi_real, &
-                                           platform(obs_type)%surf%omb, recvcount, displs, mpi_real, mpi_comm_world, req_ptr%req, mpierr)
-                        call request_append
-                        call mpi_iallgatherv(                local_qc, sendcount,         mpi_integer, &
-                                           platform(obs_type)%surf%qc, recvcount, displs, mpi_integer, mpi_comm_world, req_ptr%req, mpierr)
-
-                        if(allocated(local_omb)) deallocate(local_omb,  local_qc)
-
+                        nvar = 2
                     case (sound, tamdar, airep)
-                        allocate(i4_nlev(nobs))
-                        if( allocated(platform(obs_type)%vert) ) then
-                            do n = 1, nobs
-                                i4_nlev(n) = platform(obs_type)%vert(n)%nlev
-                            end do
-                        else
-                            allocate(platform(obs_type)%vert(nobs))
-                        end if
-
-                        call mpi_bcast(i4_nlev, nobs, mpi_integer,     root, mpi_comm_world, mpierr)
-
-                        do n = 1, nobs
-                            nlev = i4_nlev(n)
-                            platform(obs_type)%vert(n)%nlev = nlev
-
-                            if(allocated(platform(obs_type)%vert(n)%pre)) then
-                                allocate(local_omb  (4,nlev), &
-                                         local_qc   (4,nlev))
-
-                                local_omb = platform(obs_type)%vert(n)%omb(:,:,0)
-                                local_qc  = platform(obs_type)%vert(n)%qc (:,:,0)
-
-                                sendcount = 4 * nlev
-                            else
-                                allocate(platform(obs_type)%vert(n)%h  (nlev), &
-                                         platform(obs_type)%vert(n)%pre(nlev), &
-                                         platform(obs_type)%vert(n)%obs  (4,nlev), &
-                                         platform(obs_type)%vert(n)%error(4,nlev), &
-                                         platform(obs_type)%vert(n)%omb  (4,nlev,0:nmember-1), &
-                                         platform(obs_type)%vert(n)%qc   (4,nlev,0:nmember-1))
-
-                                sendcount = 0
-                            end if
-
-                            recvcount = 0
-                            displs    = 4 * nlev * nmember
-                            do k = 0, nmember-1
-                                m            = k+root
-                                recvcount(m) = 4 * nlev
-                                displs(m)    = k * 4 * nlev
-                            end do
-
-                            call request_append
-                            call mpi_ibcast(platform(obs_type)%vert(n)%h,       nlev, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                            call request_append
-                            call mpi_ibcast(platform(obs_type)%vert(n)%pre,     nlev, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                            call request_append
-                            call mpi_ibcast(platform(obs_type)%vert(n)%obs,   4*nlev, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                            call request_append
-                            call mpi_ibcast(platform(obs_type)%vert(n)%error, 4*nlev, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-
-                            call request_append
-                            call mpi_iallgatherv(                   local_omb, sendcount,         mpi_real, &
-                                               platform(obs_type)%vert(n)%omb, recvcount, displs, mpi_real, mpi_comm_world, req_ptr%req, mpierr)
-                            call request_append
-                            call mpi_iallgatherv(                   local_qc, sendcount,         mpi_integer, &
-                                               platform(obs_type)%vert(n)%qc, recvcount, displs, mpi_integer, mpi_comm_world, req_ptr%req, mpierr)
-
-                            if(allocated(local_omb)) deallocate(local_omb,  local_qc)
-
-                        end do
-
-                        deallocate(i4_nlev)
-
-                    case (gpsref)
-                        allocate(i4_nlev(nobs))
-                        if( allocated(platform(obs_type)%vert) ) then
-                            do n = 1, nobs
-                                i4_nlev(n) = platform(obs_type)%vert(n)%nlev
-                            end do
-                        else
-                            allocate(platform(obs_type)%vert(nobs))
-                        end if
-
-                        call mpi_bcast(i4_nlev, nobs, mpi_integer,     root, mpi_comm_world, mpierr)
-
-                        do n = 1, nobs
-                            nlev = i4_nlev(n)
-                            platform(obs_type)%vert(n)%nlev = nlev
- 
-                            if(allocated(platform(obs_type)%vert(n)%h)) then
-                                allocate(local_omb  (1,nlev), &
-                                         local_qc   (1,nlev))
-
-                                local_omb  = platform(obs_type)%vert(n)%omb(:,:,0)
-                                local_qc   = platform(obs_type)%vert(n)%qc (:,:,0)
-
-                                sendcount = nlev
-                            else
-                                allocate(platform(obs_type)%vert(n)%h(nlev), &
-                                         platform(obs_type)%vert(n)%obs  (1,nlev), &
-                                         platform(obs_type)%vert(n)%error(1,nlev), &
-                                         platform(obs_type)%vert(n)%omb  (1,nlev,0:nmember-1), &
-                                         platform(obs_type)%vert(n)%qc   (1,nlev,0:nmember-1))
-
-                                 sendcount = 0
-                            end if
-
-                            recvcount = 0
-                            displs    = nlev * nmember
-                            do k = 0, nmember-1
-                                m            = k+root
-                                recvcount(m) = nlev
-                                displs(m)    = k * nlev
-                            end do
-
-                            call request_append
-                            call mpi_ibcast(platform(obs_type)%vert(n)%h,     nlev, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                            call request_append
-                            call mpi_ibcast(platform(obs_type)%vert(n)%obs,   nlev, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-                            call request_append
-                            call mpi_ibcast(platform(obs_type)%vert(n)%error, nlev, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
-
-                            call request_append
-                            call mpi_iallgatherv(                    local_omb, sendcount,         mpi_real, &
-                                                platform(obs_type)%vert(n)%omb, recvcount, displs, mpi_real, mpi_comm_world, req_ptr%req, mpierr)
-                            call request_append
-                            call mpi_iallgatherv(                    local_qc, sendcount,         mpi_integer, &
-                                                platform(obs_type)%vert(n)%qc, recvcount, displs, mpi_integer, mpi_comm_world, req_ptr%req, mpierr)
-
-                            if(allocated(local_omb)) deallocate(local_omb,  local_qc)
-
-                        end do
-
-                        deallocate(i4_nlev)
-
+                        nvar = 4
+                    case (gpspw, gpsref)
+                        nvar = 1
                     end select
+
+                    if(allocated(platform % hdxb)) then
+                        allocate(local_hdxb(nvar,nobs), &
+                                 local_qc  (nvar,nobs))
+
+                        local_hdxb = platform % hdxb(:,:,0)
+                        local_qc   = platform % qc  (:,:,0)
+
+                        sendcount = nvar * nobs
+                    else
+                        allocate(platform % obs  (nvar,nobs), &
+                                 platform % error(nvar,nobs), &
+                                 platform % hdxb (nvar,nobs,0:nmember-1), &
+                                 platform % qc   (nvar,nobs,0:nmember-1))
+
+                        if(obs_type /= gpspw .and. obs_type /= gpsref) then
+                            allocate(platform % pre(nobs))
+                        end if
+
+                        sendcount = 0
+                    end if
+
+                    recvcount = 0
+                    displs    = nvar * nobs * nmember
+                    do k = 0, nmember-1
+                        m            = k+root
+                        recvcount(m) = nvar * nobs
+                        displs(m)    = k * recvcount(m)
+                    end do
+
+                    call request_append
+                    call mpi_ibcast(platform % obs,   nvar*nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
+                    call request_append
+                    call mpi_ibcast(platform % error, nvar*nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
+
+                    if(obs_type /= gpspw .and. obs_type /= gpsref) then
+                        call request_append
+                        call mpi_ibcast(platform % pre,    nobs, mpi_real, root, mpi_comm_world, req_ptr%req, mpierr)
+                    end if
+
+                    call request_append
+                    call mpi_iallgatherv(     local_hdxb, sendcount,         mpi_real, &
+                                         platform % hdxb, recvcount, displs, mpi_real, mpi_comm_world, req_ptr%req, mpierr)
+                    call request_append
+                    call mpi_iallgatherv(      local_qc, sendcount,         mpi_integer, &
+                                          platform % qc, recvcount, displs, mpi_integer, mpi_comm_world, req_ptr%req, mpierr)
+
+                    if(allocated(local_hdxb)) deallocate(local_hdxb,  local_qc)
                 end if
-            end do
-        end associate
+            end associate
+        end do
 
         deallocate(i4_nobs)
     end subroutine gts_distribute
@@ -765,134 +604,83 @@ contains
 
         !local
         integer                      :: ierr, ifile
-        integer                      :: nobs, nlev, obs_type
+        integer                      :: nobs, obs_type
         integer                      :: n, k
 
         if(myid == id) then
-
-        associate( platform => self % platform )
             do ifile = 0, nmember-1
                 write(proc, '(i3.3)') ifile+1
                 open(40, file='gts_out_'//proc, iostat=ierr)
 
                 do obs_type = 1, num_gts_indexes
-                    nobs = platform(obs_type)%nobs
-                    if(nobs == 0) cycle
-                    write(40,'(a20,i8)') trim(gts_names(obs_type)), nobs
+                    associate( platform => self % platform(obs_type) )
+                        nobs = platform % nobs
+                        if(nobs == 0) cycle
+                        write(40,'(a20,i8)') trim(gts_names(obs_type)), nobs
 
-                    select case (obs_type)
-                    case (synop, ships, buoy, metar, sonde_sfc, tamdar_sfc)
-                        do n = 1, nobs 
-                            write(40, '(2i8)') 1, 1
+                        select case (obs_type)
+                        case (synop, ships, buoy, metar, sonde_sfc, tamdar_sfc)
+                            do n = 1, nobs 
+                                write(40, '(2i8)') 1, 1
 
-                            write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                n, 1, platform(obs_type)%id(n),  &
-                                platform(obs_type)%lat(n),  &
-                                platform(obs_type)%lon(n),  &   
-                                platform(obs_type)%surf%pre(n),                                             &
-                                platform(obs_type)%surf%obs(1,n),       platform(obs_type)%surf%omb  (1,n,ifile),       &
-                                platform(obs_type)%surf%qc (1,n,ifile), platform(obs_type)%surf%error(1,n),       &
-                                0.0,                      &
-                                platform(obs_type)%surf%obs(2,n),       platform(obs_type)%surf%omb  (2,n,ifile),       &
-                                platform(obs_type)%surf%qc (2,n,ifile), platform(obs_type)%surf%error(2,n),       &
-                                0.0,                      &
-                                platform(obs_type)%surf%obs(3,n),       platform(obs_type)%surf%omb  (3,n,ifile),       &
-                                platform(obs_type)%surf%qc (3,n,ifile), platform(obs_type)%surf%error(3,n),       &
-                                0.0,                      &
-                                platform(obs_type)%surf%obs(4,n),       platform(obs_type)%surf%omb  (4,n,ifile),       &
-                                platform(obs_type)%surf%qc (4,n,ifile), platform(obs_type)%surf%error(4,n),       &
-                                0.0,                      &
-                                platform(obs_type)%surf%obs(5,n),       platform(obs_type)%surf%omb  (5,n,ifile),       &
-                                platform(obs_type)%surf%qc (5,n,ifile), platform(obs_type)%surf%error(5,n),       &
-                                0.0
-                        end do  !nobs
-                    case (pilot, profiler, geoamv, qscat, polaramv)
-                        do n = 1, nobs 
-                            nlev = platform(obs_type)%vert(n)%nlev
+                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) n, 1, &
+                                    platform % id (n),         platform % lat(n),  &
+                                    platform % lon(n),         platform % pre(n),  &
+                                    platform % obs(1,n),       platform % hdxb (1,n,ifile),      &
+                                    platform % qc (1,n,ifile), platform % error(1,n), 0.0,       &
+                                    platform % obs(2,n),       platform % hdxb (2,n,ifile),      &
+                                    platform % qc (2,n,ifile), platform % error(2,n), 0.0,       &
+                                    platform % obs(3,n),       platform % hdxb (3,n,ifile),      &
+                                    platform % qc (3,n,ifile), platform % error(3,n), 0.0,       &
+                                    platform % obs(4,n),       platform % hdxb (4,n,ifile),      &
+                                    platform % qc (4,n,ifile), platform % error(4,n), 0.0,       &
+                                    platform % obs(5,n),       platform % hdxb (5,n,ifile),      &
+                                    platform % qc (5,n,ifile), platform % error(5,n), 0.0
+                            end do  !nobs
+                        case (pilot, profiler, geoamv, qscat, polaramv)
+                            do n = 1, nobs 
+                                write(40, '(2i8)') 1, 1
 
-                            write(40,'(2i8)') nlev, 1
+                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) n, 1, &
+                                    platform % id (n),         platform % lat(n),  &
+                                    platform % lon(n),         platform % pre(n),  &
+                                    platform % obs(1,n),       platform % hdxb (1,n,ifile),      &
+                                    platform % qc (1,n,ifile), platform % error(1,n), 0.0,       &
+                                    platform % obs(2,n),       platform % hdxb (2,n,ifile),      &
+                                    platform % qc (2,n,ifile), platform % error(2,n), 0.0
+                            end do  !nobs
+                        case (gpspw, gpsref)
+                            do n = 1, nobs 
+                                write(40, '(2i8)') 1, 1
 
-                            do k = 1, nlev
-                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                    n, k, platform(obs_type)%id(n), &   
-                                    platform(obs_type)%lat(n),  &
-                                    platform(obs_type)%lon(n),  &   
-                                    platform(obs_type)%vert(n)%pre(k),                                          &
-                                    platform(obs_type)%vert(n)%obs(1,k),        platform(obs_type)%vert(n)%omb  (1,k,ifile),       &
-                                    platform(obs_type)%vert(n)%qc (1,k,ifile),  platform(obs_type)%vert(n)%error(1,k),       &
-                                    0.0,                                     &
-                                    platform(obs_type)%vert(n)%obs(2,k),        platform(obs_type)%vert(n)%omb  (2,k,ifile),       &
-                                    platform(obs_type)%vert(n)%qc (2,k,ifile),  platform(obs_type)%vert(n)%error(2,k),       &
-                                    0.0
+                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) n, 1, &
+                                    platform % id (n),         platform % lat(n),  &
+                                    platform % lon(n),         platform % alt(n),  &
+                                    platform % obs(1,n),       platform % hdxb (1,n,ifile),      &
+                                    platform % qc (1,n,ifile), platform % error(1,n), 0.0
+                            end do  !nobs
+                        case (sound, tamdar, airep)
+                            do n = 1, nobs 
+                                write(40, '(2i8)') 1, 1
 
-                            end do !nlev
-                        end do  !nobs
-                    case (gpspw)
-                        do n = 1, nobs 
-                            write(40,'(2i8)') 1, 1
-
-                            write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                n, 1, platform(obs_type)%id(n),  &   
-                                platform(obs_type)%lat(n),  &
-                                platform(obs_type)%lon(n),  &   
-                                platform(obs_type)%surf%h  (n),                                                            &
-                                platform(obs_type)%surf%obs(1,n),        platform(obs_type)%surf%omb  (1,n,ifile),     &
-                                platform(obs_type)%surf%qc (1,n,ifile),  platform(obs_type)%surf%error(1,n),     &
-                                0.0
-
-                        end do  !nobs
-                    case (sound, tamdar, airep)
-                        do n = 1, nobs 
-                            nlev = platform(obs_type)%vert(n)%nlev
-
-                            write(40,'(2i8)') nlev, 1
-
-                            do k = 1, nlev
-                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                    n, k, platform(obs_type)%id(n), &   
-                                    platform(obs_type)%lat(n),  &
-                                    platform(obs_type)%lon(n),  &   
-                                    platform(obs_type)%vert(n)%pre(k),                                          &
-                                    platform(obs_type)%vert(n)%obs(1,k),        platform(obs_type)%vert(n)%omb  (1,k,ifile),       &
-                                    platform(obs_type)%vert(n)%qc (1,k,ifile),  platform(obs_type)%vert(n)%error(1,k),       &
-                                    0.0,                                     &
-                                    platform(obs_type)%vert(n)%obs(2,k),        platform(obs_type)%vert(n)%omb  (2,k,ifile),       &
-                                    platform(obs_type)%vert(n)%qc (2,k,ifile),  platform(obs_type)%vert(n)%error(2,k),       &
-                                    0.0,                                     &
-                                    platform(obs_type)%vert(n)%obs(3,k),        platform(obs_type)%vert(n)%omb  (3,k,ifile),       &
-                                    platform(obs_type)%vert(n)%qc (3,k,ifile),  platform(obs_type)%vert(n)%error(3,k),       &
-                                    0.0,                                     &
-                                    platform(obs_type)%vert(n)%obs(4,k),        platform(obs_type)%vert(n)%omb  (4,k,ifile),       &
-                                    platform(obs_type)%vert(n)%qc (4,k,ifile),  platform(obs_type)%vert(n)%error(4,k),       &
-                                    0.0
-
-                            end do   !nlev
-                        end do  !nobs
-                    case (gpsref)
-                        do n = 1, nobs 
-                            nlev = platform(obs_type)%vert(n)%nlev
-
-                            write(40,'(2i8)') nlev, 1
-
-                            do k = 1, nlev
-                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr)    &
-                                    n, k, platform(obs_type)%id(n), &   
-                                    platform(obs_type)%lat(n),  &
-                                    platform(obs_type)%lon(n),  &   
-                                    platform(obs_type)%vert(n)%h  (k),                                              &
-                                    platform(obs_type)%vert(n)%obs(1,k),        platform(obs_type)%vert(n)%omb  (1,k,ifile),     &
-                                    platform(obs_type)%vert(n)%qc (1,k,ifile),  platform(obs_type)%vert(n)%error(1,k),     &
-                                    0.0
-                            end do   !nlev
-
-                        end do  !nobs
-                    end select
+                                write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) n, 1, &
+                                    platform % id (n),         platform % lat(n),  &
+                                    platform % lon(n),         platform % pre(n),  &
+                                    platform % obs(1,n),       platform % hdxb (1,n,ifile),      &
+                                    platform % qc (1,n,ifile), platform % error(1,n), 0.0,       &
+                                    platform % obs(2,n),       platform % hdxb (2,n,ifile),      &
+                                    platform % qc (2,n,ifile), platform % error(2,n), 0.0,       &
+                                    platform % obs(3,n),       platform % hdxb (3,n,ifile),      &
+                                    platform % qc (3,n,ifile), platform % error(3,n), 0.0,       &
+                                    platform % obs(4,n),       platform % hdxb (4,n,ifile),      &
+                                    platform % qc (4,n,ifile), platform % error(4,n), 0.0
+                            end do  !nobs
+                        end select
+                    end associate
                 end do
 
                 close(40)
             end do
-        end associate
-
         end if
 
         call mpi_barrier(mpi_comm_world, n)

@@ -263,7 +263,7 @@ contains
         !local
         type(list_type), pointer :: head    => null()
         type(list_type), pointer :: current => null()
-        integer                  :: i, j, k, idx, obs_type, nlz
+        integer                  :: i, j, idx, obs_type, nlz
         real                     :: vdistance, vclr
 
         fail = .true.
@@ -329,39 +329,26 @@ contains
                 obs_type = obs_lz(i) % mytype
 
                 select case (obs_type)
-                case (synop, metar, gpspw, ships)
-                    select case (obs_type)
-                    case (synop)
-                        vclr =  synop_nml%vclr(ivar)  * 1e3
-                    case (metar)
-                        vclr =  metar_nml%vclr(ivar)  * 1e3
-                    case (gpspw)
-                        vclr =  gpspw_nml%vclr(ivar)  * 1e3
-                    case (ships)
-                        vclr =  ships_nml%vclr(ivar)  * 1e3
-                    end select
-     
-                    do j = 1, size(obs_lz(i)%idx)
-                        idx = obs_lz(i)%idx(j)
-                        vdistance = abs(obs(obs_type)%surf%h(idx) - alt)
-                        if(vdistance < vclr) then
-                            nlz = nlz+1
-                            call append(head, current, idx, obs_lz(i)%hdistance(j), 0, vdistance)
-                        end if
-                    end do
+                case (synop)
+                    vclr =  synop_nml%vclr(ivar)  * 1e3
+                case (metar)
+                    vclr =  metar_nml%vclr(ivar)  * 1e3
+                case (gpspw)
+                    vclr =  gpspw_nml%vclr(ivar)  * 1e3
+                case (ships)
+                    vclr =  ships_nml%vclr(ivar)  * 1e3
                 case (sound)
-                    vclr =  sound_nml%vclr(ivar) * 1E3
-                    do j = 1, size(obs_lz(i)%idx)
-                        idx  = obs_lz(i)%idx(j)
-                        do k = 1, obs(obs_type)%vert(idx)%nlev
-                            vdistance = abs(obs(obs_type)%vert(idx)%h(k) - alt)
-                            if(vdistance < vclr) then
-                                nlz = nlz+1
-                                call append(head, current, idx, obs_lz(i)%hdistance(j), k, vdistance)
-                            end if
-                        end do
-                    end do
+                    vclr =  sound_nml%vclr(ivar)  * 1e3
                 end select
+     
+                do j = 1, size(obs_lz(i)%idx)
+                    idx = obs_lz(i)%idx(j)
+                    vdistance = abs(obs(obs_type)%alt(idx) - alt)
+                    if(vdistance < vclr) then
+                        nlz = nlz+1
+                        call append(head, current, idx, obs_lz(i)%hdistance(j), 0, vdistance)
+                    end if
+                end do
 
                 if(nlz > 0) then
                     fail = .false.

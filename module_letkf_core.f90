@@ -2,7 +2,7 @@ module letkf_core
 
     use localization,    only : lz_structure, get_hlz, get_vlz, destroy_vlz
     use grid,            only : grid_structure
-    use gts_omboma,      only : variables, wrfda_gts
+    use gts_omboma,      only : wrfda_gts
     use simulated_radar, only : cwb_radar
     use param
     use mpi_util
@@ -20,8 +20,8 @@ contains
         implicit none
 
         type(grid_structure),         intent(inout)   :: wrf
-        type(wrfda_gts),              intent(   in)   :: gts
-        type(cwb_radar),              intent(   in)   :: rad
+        type(wrfda_gts),              intent(in   )   :: gts
+        type(cwb_radar),              intent(in   )   :: rad
 
         !localization
         type(lz_structure), dimension(:), allocatable ::   gts_lz
@@ -224,10 +224,9 @@ contains
         end type data_list
 
         !local
-        type(data_list),  pointer            :: head      => null()
-        type(data_list),  pointer            :: current   => null()
-        type(variables),  pointer            :: obs       => null()
-        type(gts_config), pointer            :: obs_nml   => null()
+        type(data_list),     pointer         :: head      => null()
+        type(data_list),     pointer         :: current   => null()
+        type(gts_config),    pointer         :: obs_nml   => null()
         type(radar_variable_config), pointer :: radar_var => null()
 
         real,    dimension(nmember)         :: bg
@@ -238,7 +237,7 @@ contains
         real,    dimension(:), allocatable  :: err_muti, err_rej
         logical, dimension(:), allocatable  :: is_assim
 
-        total         = 0
+        total = 0
 
         if(allocated(gts_lz)) then
             do i = 1, size(gts_lz)
@@ -303,47 +302,44 @@ contains
 
                     do j = 1, size(gts_lz(i)%vert%idx)
 
-                        if(gts_lz(i)%vert%idk(j) > 0) then
-                            idx =  gts_lz(i)%vert%idx(j)
-                            obs => gts%platform(obs_type)%vert(idx)
-                            idx =  gts_lz(i)%vert%idk(j)
-                        else
-                            obs => gts%platform(obs_type)%surf
-                            idx =  gts_lz(i)%vert%idx(j)
-                        end if
-
+                        idx   = gts_lz(i)%vert%idx(j)
                         hdist = gts_lz(i)%vert%hdistance(j)
                         vdist = gts_lz(i)%vert%vdistance(j)
 
-                        do k = 1, size(obs%obs, 1)
-                            if(is_assim(k) .and. any(obs%qc(k,idx,:) >= 0)) then
-                                bg    = obs%omb(k,idx,:)
-                                mean  = sum(bg) * nmember_inv
-                                bg    = bg - mean
-                                omm   = obs%obs(k,idx) - mean
-                                std   = sqrt(dot_product(bg,bg) * nmember_1_inv)
-                                err   = obs%error(k,idx) * err_muti(k)
+                        associate( qc    => gts % platform(obs_type) % qc,    &
+                                   error => gts % platform(obs_type) % error, &
+                                   obs   => gts % platform(obs_type) % obs,   &
+                                   hdxb  => gts % platform(obs_type) % hdxb )
+                            do k = 1, size(obs, 1)
+                                if(is_assim(k) .and. any(qc(k,idx,:) >= 0)) then
+                                    bg    = hdxb(k,idx,:)
+                                    mean  = sum(bg) * nmember_inv
+                                    bg    = bg - mean
+                                    omm   = obs(k,idx) - mean
+                                    std   = sqrt(dot_product(bg,bg) * nmember_1_inv)
+                                    err   = error(k,idx) * err_muti(k)
 
-                                if(abs(omm) > sqrt(std * std + err * err) * err_rej(k)) cycle
+                                    if(abs(omm) > sqrt(std * std + err * err) * err_rej(k)) cycle
 
-                                f1    = hdist * hclr_rej * hclr_inv
-                                f2    = vdist * vclr_rej * vclr_inv
+                                    f1    = hdist * hclr_rej * hclr_inv
+                                    f2    = vdist * vclr_rej * vclr_inv
 
-                                !variance = variance * exp(r^2 / (2 * rloc^2))
-                                !note! We multiply localization funcion  on error not variance
-                                !so the weighting function should be square root
-                                !that's why it is 0.25 not 0.5 here
-                                error_inv = 1.0 / (err * exp( 0.25 * (f1*f1 + f2*f2) ))
-                                omm       = omm * error_inv
-                                bg        = bg  * error_inv
-                                call append(head, current, omm, bg)
+                                    !variance = variance * exp(r^2 / (2 * rloc^2))
+                                    !note! We multiply localization funcion  on error not variance
+                                    !so the weighting function should be square root
+                                    !that's why it is 0.25 not 0.5 here
+                                    error_inv = 1.0 / (err * exp( 0.25 * (f1*f1 + f2*f2) ))
+                                    omm       = omm * error_inv
+                                    bg        = bg  * error_inv
+                                    call append(head, current, omm, bg)
  
-                                total = total+1
-                            end if
-                        end do
+                                    total = total+1
+                                end if
+                            end do
+                        end associate
                     end do
 
-                    nullify(obs, obs_nml)
+                    nullify(obs_nml)
                     deallocate(err_muti, err_rej, is_assim)
                 end if
             end do
@@ -384,20 +380,23 @@ contains
                         vdist = radar_lz(i)%vert%vdistance(j)
 
                         if(is_assim(1)) then
-                            bg    = rad%radarobs(obs_type)%omb(idx,:)
-                            mean  = sum(bg) * nmember_inv
-                            bg    = bg - mean
-                            omm   = rad%radarobs(obs_type)%obs(idx) - mean
-                            std   = sqrt(dot_product(bg,bg) * nmember_1_inv)
-                            err   = err_muti(1)
+                            associate( hdxb => rad % radarobs(obs_type) % hdxb, &
+                                       obs  => rad % radarobs(obs_type) % obs )
+                                bg    = hdxb(idx,:)
+                                mean  = sum(bg) * nmember_inv
+                                bg    = bg - mean
+                                omm   = obs(idx) - mean
+                                std   = sqrt(dot_product(bg,bg) * nmember_1_inv)
+                                err   = err_muti(1)
 
-                            if(obs_type == dbz) then
-                                if(abs(omm) > sqrt(std * std + err * err) * err_rej(1) .and. &
-                                   rad%radarobs(obs_type)%obs(idx) /= norain_value) cycle
-                                if(rad%radarobs(obs_type)%obs(idx) == norain_value .and. mean == norain_value) cycle
-                            else
-                                if(abs(omm) > sqrt(std * std + err * err) * err_rej(1)) cycle
-                            end if
+                                if(obs_type == dbz) then
+                                    if(abs(omm) > sqrt(std * std + err * err) * err_rej(1) .and. &
+                                       obs(idx) /= norain_value) cycle
+                                    if(obs(idx) == norain_value .and. mean == norain_value) cycle
+                                else
+                                    if(abs(omm) > sqrt(std * std + err * err) * err_rej(1)) cycle
+                                end if
+                            end associate
 
                             f1    = hdist * hclr_rej * hclr_inv
                             f2    = vdist * vclr_rej * vclr_inv
