@@ -19,7 +19,6 @@ module localization
     type vlz_structure
         integer, dimension(:), allocatable  :: idx
         real,    dimension(:), allocatable  :: hdistance
-        integer, dimension(:), allocatable  :: idk
         real,    dimension(:), allocatable  :: vdistance
     end type vlz_structure
 
@@ -33,7 +32,6 @@ module localization
     type list_type
         integer                       :: idx
         real                          :: hdistance
-        integer                       :: idk
         real                          :: vdistance
         type(list_type), pointer      :: next => null()
     end type list_type
@@ -292,7 +290,7 @@ contains
                     vdistance = abs(obs(obs_type)%alt(idx) - alt)
                     if(vdistance < vclr) then
                         nlz = nlz+1
-                        call append(head, current, idx, obs_lz(i)%hdistance(j), 0, vdistance)
+                        call append(head, current, idx, obs_lz(i)%hdistance(j), vdistance)
                     end if
                 end do
 
@@ -302,7 +300,6 @@ contains
                     allocate(obs_lz(i)%vert)
                     allocate(obs_lz(i)%vert%idx      (nlz), &
                              obs_lz(i)%vert%hdistance(nlz), &
-                             obs_lz(i)%vert%idk      (nlz), &
                              obs_lz(i)%vert%vdistance(nlz))
 
                     current => head
@@ -311,7 +308,6 @@ contains
 
                         obs_lz(i)%vert%idx(j)       = current%idx
                         obs_lz(i)%vert%hdistance(j) = current%hdistance
-                        obs_lz(i)%vert%idk(j)       = current%idk
                         obs_lz(i)%vert%vdistance(j) = current%vdistance
                     end do
 
@@ -346,7 +342,7 @@ contains
                     vdistance = abs(obs(obs_type)%alt(idx) - alt)
                     if(vdistance < vclr) then
                         nlz = nlz+1
-                        call append(head, current, idx, obs_lz(i)%hdistance(j), 0, vdistance)
+                        call append(head, current, idx, obs_lz(i)%hdistance(j), vdistance)
                     end if
                 end do
 
@@ -356,7 +352,6 @@ contains
                     allocate(obs_lz(i)%vert)
                     allocate(obs_lz(i)%vert%idx      (nlz), &
                              obs_lz(i)%vert%hdistance(nlz), &
-                             obs_lz(i)%vert%idk      (nlz), &
                              obs_lz(i)%vert%vdistance(nlz))
 
                     current => head
@@ -365,7 +360,6 @@ contains
 
                         obs_lz(i)%vert%idx(j)       = current%idx
                         obs_lz(i)%vert%hdistance(j) = current%hdistance
-                        obs_lz(i)%vert%idk(j)       = current%idk
                         obs_lz(i)%vert%vdistance(j) = current%vdistance
                     end do
 
@@ -396,11 +390,10 @@ contains
 
     !=============================================================
 
-    subroutine append(head, current, idx, hdistance, idk, vdistance)
+    subroutine append(head, current, idx, hdistance, vdistance)
         implicit none
         type(list_type), pointer, intent(in out) :: head, current
         integer,                  intent(in)     :: idx
-        integer,        optional, intent(in)     :: idk
         real,           optional, intent(in)     :: hdistance, vdistance
 
 
@@ -414,7 +407,6 @@ contains
 
         current % idx = idx
         if(present(hdistance)) current % hdistance = hdistance
-        if(present(idk))       current % idk       = idk
         if(present(vdistance)) current % vdistance = vdistance
     end subroutine append
 
