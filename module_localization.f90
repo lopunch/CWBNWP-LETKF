@@ -195,17 +195,19 @@ contains
                     stop "Unknown obs type"
                 end select
 
-                call kd_search_radius(gts_tree(i) % tree, lon, lat, &
-                                      hclr, idx, distance, nlz)
+                if( hclr > 0. ) then
+                    call kd_search_radius(gts_tree(i) % tree, lon, lat, &
+                                          hclr, idx, distance, nlz)
 
-                if(nlz > 0) then
-                    fail = .false.
+                    if(nlz > 0) then
+                        fail = .false.
 
-                    allocate(obs_lz(i) %       idx(nlz), &
-                             obs_lz(i) % hdistance(nlz))
+                        allocate(obs_lz(i) %       idx(nlz), &
+                                 obs_lz(i) % hdistance(nlz))
 
-                    obs_lz(i) % idx       = idx(1:nlz)
-                    obs_lz(i) % hdistance = distance(1:nlz)
+                        obs_lz(i) % idx       = idx(1:nlz)
+                        obs_lz(i) % hdistance = distance(1:nlz)
+                    end if
                 end if
             end do
         case ('radar')
@@ -229,17 +231,19 @@ contains
                     stop "Unknown obs type"
                 end select
 
-                call kd_search_radius(radar_tree(i) % tree, lon, lat, &
-                                      hclr, idx, distance, nlz)
+                if( hclr > 0. ) then
+                    call kd_search_radius(radar_tree(i) % tree, lon, lat, &
+                                          hclr, idx, distance, nlz)
 
-                if(nlz > 0) then
-                    fail = .false.
+                    if(nlz > 0) then
+                        fail = .false.
 
-                    allocate(obs_lz(i) %       idx(nlz), &
-                             obs_lz(i) % hdistance(nlz))
+                        allocate(obs_lz(i) %       idx(nlz), &
+                                 obs_lz(i) % hdistance(nlz))
 
-                    obs_lz(i) % idx       = idx(1:nlz)
-                    obs_lz(i) % hdistance = distance(1:nlz)
+                        obs_lz(i) % idx       = idx(1:nlz)
+                        obs_lz(i) % hdistance = distance(1:nlz)
+                    end if
                 end if
             end do
         case default
@@ -285,35 +289,37 @@ contains
                     vclr = radar_nml%kdp%vclr(ivar) * 1e3
                 end select
 
-                do j = 1, size(obs_lz(i)%idx)
-                    idx = obs_lz(i)%idx(j)
-                    vdistance = abs(obs(obs_type)%alt(idx) - alt)
-                    if(vdistance < vclr) then
-                        nlz = nlz+1
-                        call append(head, current, idx, obs_lz(i)%hdistance(j), vdistance)
-                    end if
-                end do
-
-                if(nlz > 0) then
-                    fail = .false.
-
-                    allocate(obs_lz(i)%vert)
-                    allocate(obs_lz(i)%vert%idx      (nlz), &
-                             obs_lz(i)%vert%hdistance(nlz), &
-                             obs_lz(i)%vert%vdistance(nlz))
-
-                    current => head
-                    do j = 1, nlz
-                        if(j > 1) current => current%next
-
-                        obs_lz(i)%vert%idx(j)       = current%idx
-                        obs_lz(i)%vert%hdistance(j) = current%hdistance
-                        obs_lz(i)%vert%vdistance(j) = current%vdistance
+                if( vclr > 0. ) then
+                    do j = 1, size(obs_lz(i)%idx)
+                        idx = obs_lz(i)%idx(j)
+                        vdistance = abs(obs(obs_type)%alt(idx) - alt)
+                        if(vdistance < vclr) then
+                            nlz = nlz+1
+                            call append(head, current, idx, obs_lz(i)%hdistance(j), vdistance)
+                        end if
                     end do
 
+                    if(nlz > 0) then
+                        fail = .false.
 
-                    nullify(current)
-                    call destroy(head)
+                        allocate(obs_lz(i)%vert)
+                        allocate(obs_lz(i)%vert%idx      (nlz), &
+                                 obs_lz(i)%vert%hdistance(nlz), &
+                                 obs_lz(i)%vert%vdistance(nlz))
+
+                        current => head
+                        do j = 1, nlz
+                            if(j > 1) current => current%next
+
+                            obs_lz(i)%vert%idx(j)       = current%idx
+                            obs_lz(i)%vert%hdistance(j) = current%hdistance
+                            obs_lz(i)%vert%vdistance(j) = current%vdistance
+                        end do
+
+
+                        nullify(current)
+                        call destroy(head)
+                    end if
                 end if
             end do
 
@@ -337,35 +343,37 @@ contains
                     vclr =  sound_nml%vclr(ivar)  * 1e3
                 end select
      
-                do j = 1, size(obs_lz(i)%idx)
-                    idx = obs_lz(i)%idx(j)
-                    vdistance = abs(obs(obs_type)%alt(idx) - alt)
-                    if(vdistance < vclr) then
-                        nlz = nlz+1
-                        call append(head, current, idx, obs_lz(i)%hdistance(j), vdistance)
-                    end if
-                end do
-
-                if(nlz > 0) then
-                    fail = .false.
-
-                    allocate(obs_lz(i)%vert)
-                    allocate(obs_lz(i)%vert%idx      (nlz), &
-                             obs_lz(i)%vert%hdistance(nlz), &
-                             obs_lz(i)%vert%vdistance(nlz))
-
-                    current => head
-                    do j = 1, nlz
-                        if(j > 1) current => current%next
-
-                        obs_lz(i)%vert%idx(j)       = current%idx
-                        obs_lz(i)%vert%hdistance(j) = current%hdistance
-                        obs_lz(i)%vert%vdistance(j) = current%vdistance
+                if( vclr > 0. ) then
+                    do j = 1, size(obs_lz(i)%idx)
+                        idx = obs_lz(i)%idx(j)
+                        vdistance = abs(obs(obs_type)%alt(idx) - alt)
+                        if(vdistance < vclr) then
+                            nlz = nlz+1
+                            call append(head, current, idx, obs_lz(i)%hdistance(j), vdistance)
+                        end if
                     end do
 
+                    if(nlz > 0) then
+                        fail = .false.
 
-                    nullify(current)
-                    call destroy(head)
+                        allocate(obs_lz(i)%vert)
+                        allocate(obs_lz(i)%vert%idx      (nlz), &
+                                 obs_lz(i)%vert%hdistance(nlz), &
+                                 obs_lz(i)%vert%vdistance(nlz))
+
+                        current => head
+                        do j = 1, nlz
+                            if(j > 1) current => current%next
+
+                            obs_lz(i)%vert%idx(j)       = current%idx
+                            obs_lz(i)%vert%hdistance(j) = current%hdistance
+                            obs_lz(i)%vert%vdistance(j) = current%vdistance
+                        end do
+
+
+                        nullify(current)
+                        call destroy(head)
+                    end if
                 end if
             end do
         class default
