@@ -79,7 +79,11 @@ contains
         implicit none
         character(len=*), intent(in) :: filename
 
+#ifdef NC4
+        call check( nf90_create(filename, nf90_netcdf4, self % ncid) )
+#else
         call check( nf90_create(filename, nf90_clobber, self % ncid) )
+#endif
     end function create_wrf_ncdf
 
     subroutine close_reading(self)
@@ -94,6 +98,9 @@ contains
         class(write_nc), intent(in)  :: self
 
         call check( nf90_close(self % ncid) )
+
+        if(allocated(vars))           deallocate(vars)
+        if(allocated(I_am_not_write)) deallocate(I_am_not_write)
     end subroutine close_writing
 
     function get_dimension(self, varname) result(dsize)
@@ -180,6 +187,13 @@ contains
         !local              
         integer           :: dummyid, dimval
         integer           :: dimid, attid, varid
+#ifdef NC4
+        integer, parameter    :: cache_size    = 32000000  !this is defalut size in NetCDF
+        integer, parameter    :: deflate_level = 4         !compression level between 0~9
+        logical, parameter    :: shuffle       = .true.
+        integer, allocatable  :: chunksizes(:)
+        integer               :: block_size, n
+#endif
 
         call check( nf90_inquire(you, ndims, nvars, natts, unlimitid) )
 
@@ -208,7 +222,30 @@ contains
             allocate(vars(varid)%dimids(vars(varid)%ndims))
 
             call check( nf90_inquire_variable(you, varid, dimids=vars(varid)%dimids, natts=varnatts) )
+#ifdef NC4
+
+            allocate(chunksizes(vars(varid)%ndims))
+            do n = 1, vars(varid)%ndims
+                call check( nf90_inquire_dimension(you, vars(varid)%dimids(n), len=chunksizes(n)) )
+            end do
+
+            !set a good chunking size, following wrf procedure
+            if(vars(varid)%ndims > 1) then
+                chunksizes = (chunksizes + 1) / 2
+                block_size = product(chunksizes)
+                do while(block_size > cache_size)
+                    chunksizes = (chunksizes + 1) / 2
+                    block_size = product(chunksizes)
+                end do
+            end if
+
+            call check( nf90_def_var(self % ncid, vars(varid)%name, vars(varid)%xtype, vars(varid)%dimids, dummyid, &
+                        chunksizes=chunksizes, shuffle=shuffle, deflate_level=deflate_level) )
+
+            deallocate(chunksizes)
+#else
             call check( nf90_def_var(self % ncid, vars(varid)%name, vars(varid)%xtype, vars(varid)%dimids, dummyid) )
+#endif
 
             do attid = 1, varnatts
                 call check( nf90_inq_attname(you, dummyid, attid, attname) )
@@ -343,8 +380,8 @@ contains
         integer, intent(in) :: ierr
         
         if(ierr /= nf90_noerr) then
-!           call letkf_abort(trim(nf90_strerror(ierr)))
-            stop "Netcdf error"
+            print *, trim(nf90_strerror(ierr))
+            stop
         end if
     end subroutine check
 

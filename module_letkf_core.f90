@@ -45,7 +45,7 @@ contains
 
         call letkf_local_info(nx, ny)
 
-        update : do ivar = 1, size(var_update)
+        update : do ivar = 1, max_vars
             if(len_trim(var_update(ivar)) == 0) exit
             if(is_root) print '(f7.3,1x,a,1x,10a)', timer(), "sec ==========> update", var_update(ivar)
 
@@ -182,22 +182,31 @@ contains
             case ('T')                             
                 call letkf_gather_grid(var, wrf % t)
             case ('QVAPOR')
+                where(var < 0.) var = 0.
                 call letkf_gather_grid(var, wrf %  qv)
             case ('QRAIN')                
+                where(var < 0.) var = 0.
                 call letkf_gather_grid(var, wrf %  qr)
             case ('QSNOW')               
+                where(var < 0.) var = 0.
                 call letkf_gather_grid(var, wrf %  qs)
             case ('QGRAUP')               
+                where(var < 0.) var = 0.
                 call letkf_gather_grid(var, wrf %  qg)
             case ('QHAIL')                
+                where(var < 0.) var = 0.
                 call letkf_gather_grid(var, wrf %  qh)
             case ('QNRAIN')               
+                where(var < 0.) var = 0.
                 call letkf_gather_grid(var, wrf % nqr)
             case ('QNSNOW')               
+                where(var < 0.) var = 0.
                 call letkf_gather_grid(var, wrf % nqs)
             case ('QNGRAUPEL')              
+                where(var < 0.) var = 0.
                 call letkf_gather_grid(var, wrf % nqg)
             case ('QNHAIL')               
+                where(var < 0.) var = 0.
                 call letkf_gather_grid(var, wrf % nqh)
             case default
                 stop "Need to code for unknown variable"
@@ -489,11 +498,17 @@ contains
 
         !local
         integer                                :: i, nobs, shp(2)
+#ifdef REAL64
         real*8                                 :: xb_mean, inflat_r8
         real*8, dimension(nmember)             :: xb_prime, wbar
         real*8, dimension(nmember, nmember)    :: identity, wbar2d, w
         real*8, dimension(:),   allocatable    :: yo_r8
         real*8, dimension(:,:), allocatable    :: yb_r8
+#else
+        real                                   :: xb_mean
+        real,   dimension(nmember)             :: xb_prime, wbar
+        real,   dimension(nmember, nmember)    :: identity, wbar2d, w
+#endif
 
         !RTPP, RTPS
         real                                   :: xa_std, xb_std
@@ -501,13 +516,22 @@ contains
         real,   dimension(nmember)             :: xa_prime
 
 
+#ifdef REAL64
         identity = 0d0
         do concurrent(i=1:nmember)
             identity(i,i) = 1d0
         end do
+#else
+        identity = 0.0
+        do concurrent(i=1:nmember)
+            identity(i,i) = 1.0
+        end do
+#endif
 
         shp  = shape(yb)
         nobs = shp(2)
+
+#ifdef REAL64
         allocate(yb_r8(shp(1), shp(2)), yo_r8(nobs))
 
         !real to double
@@ -520,18 +544,33 @@ contains
         call dgemv('n', nmember, nobs, 1d0, yb_r8, nmember, yo_r8, 1, 0d0, wbar, 1)
         call dsymv('l', nmember, 1d0, identity, nmember, wbar, 1, 0d0, xb_prime, 1)
 
+        deallocate(yb_r8, yo_r8)
+#else
+        call ssyrk('l', 'n', nmember, nobs, 1.0, yb, nmember, inflat, identity, nmember)
+        call inverse_matrix(identity, nmember)
+        call sgemv('n', nmember, nobs, 1.0, yb, nmember, yo, 1, 0.0, wbar, 1)
+        call ssymv('l', nmember, 1.0, identity, nmember, wbar, 1, 0.0, xb_prime, 1)
+#endif
+
         wbar2d = spread(xb_prime, 2, nmember)
 
         call sqrt_matrix(w, nmember)
+#ifdef REAL64
         call daxpy(nmember*nmember, sqrt(dble(nmember-1)), w, 1, wbar2d, 1)
+#else
+        call saxpy(nmember*nmember, sqrt(float(nmember-1)), w, 1, wbar2d, 1)
+#endif
 
         xb_mean  = sum(xb) * nmember_inv
         xb_prime = xb - xb_mean
         wbar     = xb_mean
+#ifdef REAL64
         call dgemv('t', nmember, nmember, 1d0, wbar2d, nmember, xb_prime, 1, 1d0, wbar, 1)
+#else
+        call sgemv('t', nmember, nmember, 1.0, wbar2d, nmember, xb_prime, 1, 1.0, wbar, 1)
+#endif
         xa       = wbar
 
-        deallocate(yb_r8, yo_r8)
 
         !=====================================================================================
 

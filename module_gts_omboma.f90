@@ -392,8 +392,9 @@ contains
                         end do
                         end do
 
-                        deallocate(vert)
                     end associate
+
+                    deallocate(vert)
 
                 end if
             case ('gpsref')

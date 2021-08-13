@@ -143,7 +143,7 @@ contains
                     if(allocated(radarobs % obs)) then
                         allocate(local_hdxb(nobs))
                         local_hdxb = radarobs % hdxb(:,0)
-                        sendcount = nobs
+                        sendcount  = nobs
                     else
                         allocate(radarobs % obs (nobs),  &
                                  radarobs % lat (nobs),  &

@@ -1,10 +1,12 @@
 module grid
     
     use param
+    use mpi_util
     use netcdf_io, only : read_nc, write_nc, open_wrf_ncdf, create_wrf_ncdf
     use config,    only : wrf_mp_physics,  &
                           wrf_mp_hail_opt, &
                           wrf_hypsometric_opt, &
+                          write_analy_mean,    &
                           NT2LOG, NT2Dm, NT2D0, NT2D6, NT2De
 
     implicit none
@@ -38,9 +40,10 @@ module grid
         real, dimension(:,:),   allocatable :: xlon,   xlat,   &
                                                xlon_u, xlat_u, &
                                                xlon_v, xlat_v
-        real, dimension(:,:),   allocatable :: mu, psfc
+        real, dimension(:,:),   allocatable :: mu, mub, psfc
 
-        real, dimension(:,:,:), allocatable ::   u,   v,   w,   t,  p, ph, qv
+        real, dimension(:,:,:), allocatable ::   u,   v,   w,   t,  p, &
+                                                ph,  pb, phb,  qv
         real, dimension(:,:,:), allocatable ::  qr,  qs,  qg,  qh, &
                                                nqr, nqs, nqg, nqh
         real, dimension(:,:,:), allocatable :: rhoa!, DmR, DmS, DmG, DmH
@@ -50,6 +53,7 @@ module grid
         procedure, public, pass(self) :: define_wrf_mp_physics
         procedure, public, pass(self) :: read_model
         procedure, public, pass(self) :: write_model
+        procedure, public, pass(self) :: write_mean
         procedure, public, pass(self) :: distribute_geoinfo
 
     end type grid_structure
@@ -236,8 +240,7 @@ contains
         real                                   :: t00, p00, tlp, tiso, p_strat, tlp_strat, p_top
         real                                   :: p00_inv, p_strat_inv, p1000mb_inv
         real, dimension(:),     allocatable    :: rdnw, znw, znu
-        real, dimension(:,:),   allocatable    :: mub, alb, al, pfu, pfd, phm
-        real, dimension(:,:,:), allocatable    :: pb, phb
+        real, dimension(:,:),   allocatable    :: mu_full, alb, al, pfu, pfd, phm
         real, dimension(:,:,:), allocatable    :: temp, t_init
 
 
@@ -270,16 +273,19 @@ contains
                      self % xlon_v(nx,ny+1),  &
                      self % xlat_v(nx,ny+1),  &
                      self % mu  (nx, ny),     &
+                     self % mub (nx, ny),     &
                      self % psfc(nx, ny),     &
-                     self % u (nx+1, ny, nz), &
-                     self % v (nx, ny+1, nz), &
-                     self % w (nx, ny, nz+1), &
-                     self % ph(nx, ny, nz+1), &
-                     self % t (nx, ny, nz),   &
-                     self % p (nx, ny, nz),   &
-                     self % qv(nx, ny, nz),   &
-                     self % qr(nx, ny, nz),   &
-                     self % qs(nx, ny, nz))
+                     self % u  (nx+1, ny, nz),&
+                     self % v  (nx, ny+1, nz),&
+                     self % w  (nx, ny, nz+1),&
+                     self % ph (nx, ny, nz+1),&
+                     self % phb(nx, ny, nz+1),&
+                     self % t  (nx, ny, nz),  &
+                     self % p  (nx, ny, nz),  &
+                     self % pb (nx, ny, nz),  &
+                     self % qv (nx, ny, nz),  &
+                     self % qr (nx, ny, nz),  &
+                     self % qs (nx, ny, nz))
 
             if ( self % model_MP_graupel ) allocate( self % qg(nx, ny, nz) )
             if ( self % model_MP_hail    ) allocate( self % qh(nx, ny, nz) )
@@ -308,8 +314,6 @@ contains
                    !if ( NT2Dm .or. NT2D0 .or. NT2D6 .or. NT2De ) allocate( self % DmH(nx, ny, nz) )
                 end if
             end if
-
-            allocate( phb(nx, ny, nz+1), pb (nx, ny, nz) )
         end associate
 
         !read variables
@@ -321,17 +325,18 @@ contains
         call nc % get_variable('XLAT_V',  self % xlat_v)
         call nc % get_variable('PSFC',    self % psfc)
         call nc % get_variable('MU',      self % mu)
+        call nc % get_variable('MUB',     self % mub)
         call nc % get_variable('U',       self % u)
         call nc % get_variable('V',       self % v)
         call nc % get_variable('W',       self % w)
         call nc % get_variable('PH',      self % ph)
+        call nc % get_variable('PHB',     self % phb)
         call nc % get_variable('T',       self % t)
         call nc % get_variable('P',       self % p)
+        call nc % get_variable('PB',      self % pb)
         call nc % get_variable('QVAPOR',  self % qv)
         call nc % get_variable('QRAIN',   self % qr)
         call nc % get_variable('QSNOW',   self % qs)
-        call nc % get_variable('PHB',            phb)
-        call nc % get_variable('PB',             pb)
 
 
         if ( self % model_MP_graupel ) then
@@ -394,18 +399,20 @@ contains
             p1000mb_inv = 1.0 / p1000mb
 
             associate( nx => self % nx, ny => self % ny, nz => self % nz )
-                allocate( temp(nx, ny, nz), t_init(nx, ny, nz), mub(nx, ny) )
+                allocate( temp(nx, ny, nz), t_init(nx, ny, nz) )
             end associate
 
-            temp   = max( tiso, t00 + tlp * log(pb * p00_inv) )
-            where ( pb < p_strat ) temp   =  tiso + tlp_strat * log(pb * p_strat_inv)
+            temp = max( tiso, t00 + tlp * log(self%pb * p00_inv) )
+            where ( self%pb < p_strat ) 
+                temp = tiso + tlp_strat * log(self%pb * p_strat_inv)
+            end where
 
            !t_init = temp * (p00 / pb) ** (r_d/cp)
-            t_init = exp(r_d/cp * log(temp * (p00 / pb)))
+            t_init = exp(r_d/cp * log(temp * (p00 / self%pb)))
 
-            !get full mu in mub
-            call nc % get_variable('MUB',   mub)
-            call saxpy(size(mub), 1.0,  self % mu, 1,  mub, 1)
+            !get full mu in mu_full
+            allocate(mu_full, source=self % mub)
+            call saxpy(size(mu_full), 1.0,  self % mu, 1,  mu_full, 1)
 
             if (wrf_hypsometric_opt == 1) then
 
@@ -416,8 +423,8 @@ contains
                 call nc % get_variable('RDNW', rdnw)
                 do k = 1, self % nz
                    !alb = (r_d*p1000mb_inv) * t_init(:,:,k) * (pb(:,:,k)*p1000mb_inv) ** cvpm
-                    alb = (r_d*p1000mb_inv) * t_init(:,:,k) * exp(cvpm * log(pb(:,:,k)*p1000mb_inv))
-                    al  = -1./mub * (alb*self%mu+rdnw(k) * (self%ph(:,:,k+1)-self%ph(:,:,k)))
+                    alb = (r_d*p1000mb_inv) * t_init(:,:,k) * exp(cvpm * log(self%pb(:,:,k)*p1000mb_inv))
+                    al  = -1./mu_full * (alb*self%mu+rdnw(k) * (self%ph(:,:,k+1)-self%ph(:,:,k)))
                     self % rhoa(:,:,k) = 1./(alb+al)
                 end do
 
@@ -436,20 +443,20 @@ contains
                 call nc % get_variable('ZNU',   znu)
 
                 do k = 1, self % nz
-                    pfu = mub * znw(k+1) + p_top
-                    pfd = mub * znw(k)   + p_top
-                    phm = mub * znu(k)   + p_top
+                    pfu = mu_full * znw(k+1) + p_top
+                    pfd = mu_full * znw(k)   + p_top
+                    phm = mu_full * znu(k)   + p_top
                    !alb = (r_d*p1000mb_inv) * t_init(:,:,k) * (pb(:,:,k)*p1000mb_inv) ** cvpm
-                    alb = (r_d*p1000mb_inv) * t_init(:,:,k) * exp(cvpm * log(pb(:,:,k)*p1000mb_inv))
+                    alb = (r_d*p1000mb_inv) * t_init(:,:,k) * exp(cvpm * log(self%pb(:,:,k)*p1000mb_inv))
                     al  = (self%ph (:,:,k+1) - self%ph (:,:,k)  + &
-                                phb(:,:,k+1) -      phb(:,:,k)) / (phm * log(pfd/pfu)) - alb
+                           self%phb(:,:,k+1) - self%phb(:,:,k)) / (phm * log(pfd/pfu)) - alb
                     self % rhoa(:,:,k) = 1./(alb+al)
                 end do
 
                 deallocate(alb,al,pfu,pfd,phm,znw,znu)
             end if
 
-            deallocate(mub, temp, t_init)
+            deallocate(mu_full, temp, t_init)
 
 !           if ( self % model_MP_momentR >= 2 ) then
 !               call nqx_to_DmX(self % qr,      &
@@ -508,10 +515,14 @@ contains
         call nc % close_reading
 
         !sum based-state and perturbed pressure to get full pressure
-        call saxpy(size(self % ph), 1.0, phb, 1, self % ph, 1)
-        call saxpy(size(self %  p), 1.0,  pb, 1, self %  p, 1)
+        call saxpy(size(self % ph), 1.0, self % phb, 1, self % ph, 1)
+        call saxpy(size(self % p),  1.0, self % pb,  1, self %  p, 1)
 
-        deallocate(phb, pb)
+        if(.not. write_analy_mean) then
+            deallocate(self % phb, &
+                       self % pb,  &
+                       self % mub)
+        end if
 
     end subroutine read_model
 
@@ -526,6 +537,8 @@ contains
 
         nc1 =   open_wrf_ncdf(input_filename)
         nc2 = create_wrf_ncdf(      filename)
+
+        deallocate(input_filename)
 
         call nc2 % copy_header_from( nc1 % ncid )
         call nc2 % write_variable('U',      self % u)
@@ -652,8 +665,274 @@ contains
 
     end subroutine write_model
 
+    subroutine write_mean(self, root, filename)
+        implicit none
+        class(grid_structure),  intent(in out) :: self   
+        character(len=*),       intent(in)     :: filename
+        integer,                intent(in)     :: root
+
+        type( read_nc)                         :: nc1
+        type(write_nc)                         :: nc2
+        character(len=255)                     :: source_filename
+
+        logical                                :: use_local
+        integer                                :: nxny
+        integer                                :: nxnynz, nx1nynz, nxny1nz, nxnynz1
+
+        !mpi
+        integer                                :: mpierr
+
+        use_local = .false.
+        nxny      = self % nx * self % ny
+        nxnynz    = nxny * self % nz
+        nxnynz1   = nxny * (self % nz + 1)
+        nx1nynz   = (self % nx + 1) * self % ny * self % nz
+        nxny1nz   = (self % ny + 1) * self % nx * self % nz
+
+        if(.not. allocated(self % u)) then
+            use_local = .true.
+
+            associate( nx => self % nx, ny => self % ny, nz => self % nz )
+                allocate(self % mu  (nx, ny),     &
+                         self % mub (nx, ny),     &
+                         self % psfc(nx, ny),     &
+                         self % u  (nx+1, ny, nz),&
+                         self % v  (nx, ny+1, nz),&
+                         self % w  (nx, ny, nz+1),&
+                         self % ph (nx, ny, nz+1),&
+                         self % phb(nx, ny, nz+1),&
+                         self % t  (nx, ny, nz),  &
+                         self % p  (nx, ny, nz),  &
+                         self % pb (nx, ny, nz),  &
+                         self % qv (nx, ny, nz),  &
+                         self % qr (nx, ny, nz),  &
+                         self % qs (nx, ny, nz))
+
+                if ( self % model_MP_graupel ) then
+                    allocate( self % qg(nx, ny, nz) )
+                    self % qg = 0.
+                end if
+                if ( self % model_MP_hail    ) then
+                    allocate( self % qh(nx, ny, nz) )
+                    self % qh = 0.
+                end if
+
+                if ( self % model_MP_momentR >= 2 ) then
+                    allocate( self % nqr(nx, ny, nz) )
+                    self % nqr = 0.
+                end if
+
+                if ( self % model_MP_momentS >= 2 ) then
+                    allocate( self % nqs(nx, ny, nz) )
+                    self % nqs = 0.
+                end if
+
+                if ( self % model_MP_momentG >= 2 ) then
+                    allocate( self % nqg(nx, ny, nz) )
+                    self % nqg = 0.
+                end if
+
+                if ( self % model_MP_momentH >= 2 ) then
+                    allocate( self % nqh(nx, ny, nz) )
+                    self % nqh = 0.
+                end if
+            end associate
+
+            self % mu   = 0. ; self % mub  = 0. ; self % psfc = 0.
+            self % u    = 0. ; self % v    = 0. ; self % w    = 0.
+            self % ph   = 0. ; self % phb  = 0.
+            self % p    = 0. ; self % pb   = 0.
+            self % t    = 0. ; self % qv   = 0.
+            self % qs   = 0. ; self % qr   = 0.
+        end if
+
+        if(myid == root) then
+            call mpi_recv(source_filename, len(source_filename), mpi_character, 0, 101, mpi_comm_world, mpi_status_ignore, mpierr)
+
+            call mpi_reduce(mpi_in_place, self % mu,    nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % mub,   nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % psfc,  nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % u,  nx1nynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % v,  nxny1nz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % w,  nxnynz1, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % ph, nxnynz1, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % phb,nxnynz1, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % t,   nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % p,   nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % pb,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % qv,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % qr,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(mpi_in_place, self % qs,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+
+            if ( self % model_MP_graupel ) then
+                call mpi_reduce(mpi_in_place, self % qg,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+                if ( self % model_MP_momentG >= 2 ) then
+                    call mpi_reduce(mpi_in_place, self % nqg,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+                end if
+            end if
+
+            if ( self % model_MP_hail ) then
+                call mpi_reduce(mpi_in_place, self % qh,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+                if ( self % model_MP_momentH >= 2 ) then
+                    call mpi_reduce(mpi_in_place, self % nqh,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+                end if
+            end if
+
+            if ( self % model_MP_momentR >= 2 ) then
+                call mpi_reduce(mpi_in_place, self % nqr,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            end if
+
+            if ( self % model_MP_momentS >= 2 ) then
+                call mpi_reduce(mpi_in_place, self % nqs,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            end if
+
+        else
+            if(is_root) then
+                source_filename = input_filename
+                call mpi_send(source_filename, len(source_filename), mpi_character, root, 101, mpi_comm_world, mpierr)
+            end if
+
+            call mpi_reduce(self % mu,   self % mu,    nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % mub,  self % mub,   nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % psfc, self % psfc,  nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % u,    self % u,  nx1nynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % v,    self % v,  nxny1nz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % w,    self % w,  nxnynz1, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % ph,   self % ph, nxnynz1, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % phb,  self % phb,nxnynz1, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % t,    self % t,   nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % p,    self % p,   nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % pb,   self % pb,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % qv,   self % qv,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % qr,   self % qr,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            call mpi_reduce(self % qs,   self % qs,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+
+            if ( self % model_MP_graupel ) then
+                call mpi_reduce(self % qg, self % qg,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+                if ( self % model_MP_momentG >= 2 ) then
+                    call mpi_reduce(self % nqg, self % nqg,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+                end if
+            end if
+
+            if ( self % model_MP_hail ) then
+                call mpi_reduce(self % qh, self % qh,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+                if ( self % model_MP_momentH >= 2 ) then
+                    call mpi_reduce(self % nqh, self % nqh,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+                end if
+            end if
+
+            if ( self % model_MP_momentR >= 2 ) then
+                call mpi_reduce(self % nqr, self % nqr,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            end if
+
+            if ( self % model_MP_momentS >= 2 ) then
+                call mpi_reduce(self % nqs, self % nqs,  nxnynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
+            end if
+
+        end if
+
+
+        if(myid == root) then
+            call sscal(nxny,    nmember_inv, self % mu,  1)
+            call sscal(nxny,    nmember_inv, self % mub, 1)
+            call sscal(nx1nynz, nmember_inv, self % u,   1)
+            call sscal(nxny1nz, nmember_inv, self % v,   1)
+            call sscal(nxnynz1, nmember_inv, self % w,   1)
+            call sscal(nxnynz1, nmember_inv, self % ph,  1)  !full geopotential
+            call sscal(nxnynz1, nmember_inv, self % phb, 1)
+            call sscal(nxnynz,  nmember_inv, self % t,   1)
+            call sscal(nxnynz,  nmember_inv, self % p,   1)  !full pressure
+            call sscal(nxnynz,  nmember_inv, self % pb,  1)
+            call sscal(nxnynz,  nmember_inv, self % qv,  1)
+            call sscal(nxnynz,  nmember_inv, self % qr,  1)
+            call sscal(nxnynz,  nmember_inv, self % qs,  1)
+
+            !ph = ph - phb ; p = p - pb
+            call saxpy(nxnynz1, -1.0, self % phb, 1, self % ph, 1)
+            call saxpy(nxnynz,  -1.0, self % pb,  1, self % p,  1)
+
+
+            nc1 =   open_wrf_ncdf(source_filename)
+            nc2 = create_wrf_ncdf(       filename)
+
+            call nc2 % copy_header_from( nc1 % ncid )
+            call nc2 % write_variable('MU',     self % mu)
+            call nc2 % write_variable('MUB',    self % mub)
+            call nc2 % write_variable('U',      self % u)
+            call nc2 % write_variable('V',      self % v)
+            call nc2 % write_variable('W',      self % w)
+            call nc2 % write_variable('PH',     self % ph)
+            call nc2 % write_variable('PHB',    self % phb)
+            call nc2 % write_variable('T',      self % t)
+            call nc2 % write_variable('P',      self % p)
+            call nc2 % write_variable('PB',     self % pb)
+            call nc2 % write_variable('QVAPOR', self % qv)
+            call nc2 % write_variable('QRAIN',  self % qr)
+            call nc2 % write_variable('QSNOW',  self % qs)
+
+            if ( self % model_MP_graupel ) then
+                call sscal(nxnynz,  nmember_inv, self % qg,  1)
+                call nc2 % write_variable('QGRAUP', self % qg)
+            end if
+
+            if ( self % model_MP_hail ) then
+                call sscal(nxnynz,  nmember_inv, self % qh,  1)
+                call nc2 % write_variable('QHAIL',  self % qh)
+            end if
+
+            if( self % model_MP_momentR >= 2 ) then
+                call sscal(nxnynz,  nmember_inv, self % nqr,  1)
+                call nc2 % write_variable('QNRAIN',  self % nqr)
+            end if
+
+            if( self % model_MP_momentS >= 2 ) then
+                call sscal(nxnynz,  nmember_inv, self % nqs,  1)
+                call nc2 % write_variable('QNSNOW',  self % nqs)
+            end if
+
+            if( self % model_MP_momentG >= 2 ) then
+                call sscal(nxnynz,  nmember_inv, self % nqg,  1)
+                call nc2 % write_variable('QNGRAUPEL',  self % nqg)
+            end if
+
+            if( self % model_MP_momentH >= 2 ) then
+                call sscal(nxnynz,  nmember_inv, self % nqh,  1)
+                call nc2 % write_variable('QNHAIL',  self % nqh)
+            end if
+
+            call nc2 % write_variable('OTHERS',  nc1 % ncid)
+            call nc2 % close_writing
+            call nc1 % close_reading
+        end if
+
+
+        if(use_local) then
+            deallocate(self % mu  ,    &
+                       self % mub ,    & 
+                       self % psfc,    &
+                       self % u ,      &
+                       self % v ,      &
+                       self % w ,      &
+                       self % ph,      &
+                       self % phb,     &
+                       self % t ,      &
+                       self % p ,      &
+                       self % pb,      &
+                       self % qv,      &
+                       self % qr,      &
+                       self % qs)
+
+            if ( self % model_MP_graupel )      deallocate( self % qg )
+            if ( self % model_MP_hail    )      deallocate( self % qh )
+            if ( self % model_MP_momentR >= 2 ) deallocate( self % nqr )
+            if ( self % model_MP_momentS >= 2 ) deallocate( self % nqs )
+            if ( self % model_MP_momentG >= 2 ) deallocate( self % nqg )
+            if ( self % model_MP_momentH >= 2 ) deallocate( self % nqh )
+        end if
+    end subroutine write_mean
+
+
     subroutine distribute_geoinfo(self, root)
-        use mpi_util
         implicit none
 
         class(grid_structure), intent(in out) :: self

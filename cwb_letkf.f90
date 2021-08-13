@@ -2,7 +2,7 @@ program main
     use mpi_util,         only : letkf_init, letkf_finalize, timer, wait_jobs, &
                                  myid, nproc, req_ptr, is_root
     use param,            only : num_gts_indexes, num_radar_indexes, set_ensemble_constants
-    use config,           only : nmember, read_namelist
+    use config,           only : nmember, read_namelist, write_analy_mean
     use grid,             only : grid_structure
     use eigen,            only : set_optimal_workspace_for_eigen, destroy_eigen_array
     use localization,     only : build_tree, destroy_tree
@@ -24,6 +24,7 @@ program main
 
     if(is_root) print '(f7.3,1x,a)', timer(), "sec ==========> reading namelist"
     call read_namelist("../input/input.nml")
+    if(nproc < nmember) stop "Number of process should be greater than ensemble sizes!!"
 
     if(is_root) print '(f7.3,1x,a)', timer(), "sec ==========> set optimal workspace for eigen"
     call set_optimal_workspace_for_eigen(nmember)
@@ -74,6 +75,11 @@ program main
 
     deallocate(gts % platform, &
                rad % radarobs)
+
+    if(write_analy_mean) then
+        if(is_root) print '(f7.3,1x,a)', timer(), "sec ==========> write analysis mean"
+        call wrf % write_mean(filename="output/wrfout_nc_mean", root=nproc-1)
+    end if
 
     if(is_root) print '(f7.3,1x,a)', timer(), "sec ==========> write analysis ensemble"
     if(myid < nmember) then 

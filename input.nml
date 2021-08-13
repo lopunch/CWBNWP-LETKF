@@ -1,10 +1,20 @@
 &control
 
- write_analy_mean = .false.
+ write_analy_mean = .true.
  wrf_mp_physics   = 9
  wrf_mp_hail_opt  = 0
  nmember          = 96
  var_update       = 'U','V', 'W','T','QVAPOR','QRAIN','QSNOW','QGRAUP','QHAIL','QNRAIN','QNSNOW','QNGRAUPEL','QNHAIL',
+
+ /
+
+&projection
+
+ cen_lon  = 120.814
+ cen_lat  = 23.7644
+ truelat1 = 10.0  
+ truelat2 = 40.0  
+ sta_lon  = 120.0
 
  /
 
@@ -129,8 +139,10 @@
  /
 
 &inflation
+
  multi_infl      =     1.6,    1.6,    1.1,    1.6,    1.6,    1.1,    1.1,    1.1,    1.1,    1.1,    1.1,    1.1,    1.1,
+
+ /
 
  use_RTPP        = .true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,
  use_RTPS        = .true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,.true. ,
- /
