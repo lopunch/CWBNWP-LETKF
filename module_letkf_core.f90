@@ -1,9 +1,11 @@
 module letkf_core
 
-    use localization,    only : lz_structure, get_hlz, get_vlz, destroy_vlz
+    use localization,    only : lz_structure, get_lz, build_tree, destroy_tree, &
+                                Gaspari_Cohn_1999
     use grid,            only : grid_structure
     use gts_omboma,      only : wrfda_gts
     use simulated_radar, only : cwb_radar
+    use projection,      only : proj_type
     use param
     use mpi_util
     use eigen
@@ -16,12 +18,13 @@ module letkf_core
 
 contains
 
-    subroutine letkf_driver(wrf, gts, rad)
+    subroutine letkf_driver(wrf, gts, rad, proj)
         implicit none
 
         type(grid_structure),         intent(inout)   :: wrf
         type(wrfda_gts),              intent(in   )   :: gts
         type(cwb_radar),              intent(in   )   :: rad
+        type(proj_type),              intent(in   )   :: proj
 
         !localization
         type(lz_structure), dimension(:), allocatable ::   gts_lz
@@ -31,123 +34,190 @@ contains
         integer                                       :: ivar
         integer                                       :: i, j, k
         integer                                       :: nx, ny, nz
+        integer                                       :: ids, ide, jds, jde
+        integer                                       :: loc_nx, loc_ny
+        integer                                       :: Hstag,  Vstag
+        logical                                       :: Hreset, Vreset
         real                                          :: inflat
+        real, dimension(3)                            :: xyz
         real, dimension(nmember)                      :: xb
         real, dimension(:),       allocatable         :: yo
         real, dimension(:,:),     allocatable         :: yb, lat, lon
-        real, dimension(:,:,:),   allocatable         :: alt
+        real, dimension(:,:,:),   allocatable         :: alt, hgt, mu
         real, dimension(:,:,:,:), allocatable         :: var
-        logical, dimension(2)                         :: fail_h, fail_v
+        logical, dimension(2)                         :: succeed, fail
 
-        call wait_jobs(1, 3)
+        call wait_jobs(1, req_ptr%idx)
         nx = wrf % nx
         ny = wrf % ny
 
         call letkf_local_info(nx, ny)
 
+        Hstag  = 0
+        Vstag  = 0
+
         update : do ivar = 1, max_vars
             if(len_trim(var_update(ivar)) == 0) exit
             if(is_root) print '(f7.3,1x,a,1x,10a)', timer(), "sec ==========> update", var_update(ivar)
 
+            succeed(1) = build_tree(gts % platform, ivar)
+            succeed(2) = build_tree(rad % radarobs, ivar)
+
+            if(all(.not. succeed)) cycle
+
             inflat = (nmember-1) / multi_infl(ivar)
             nz     = wrf % nz
 
+            loc_nx = cpu(myid)%loc_nx
+            loc_ny = cpu(myid)%loc_ny
+
             select case(trim(var_update(ivar)))
             case ('U')
-                call letkf_scatter_hcoord(wrf % xlat_u, lat, &
-                                          wrf % xlon_u, lon, 1)
-                call letkf_scatter_vcoord(wrf % ph, nz, alt   )
-                call letkf_scatter_grid  (wrf % u,  nz, var, 1)
+                loc_nx = cpu(myid)%loc_nx_u
             case ('V')
-                call letkf_scatter_hcoord(wrf % xlat_v, lat, &
-                                          wrf % xlon_v, lon, 2)
-                call letkf_scatter_vcoord(wrf % ph, nz, alt   )
-                call letkf_scatter_grid(  wrf % v,  nz, var, 2)
+                loc_ny = cpu(myid)%loc_ny_v
+            case ('W', 'PH')
+                nz = nz + 1
+            case ('MU')
+                nz = 1
+            end select
+
+            allocate(var( loc_nx, loc_ny, nz, 0:nmember-1 ))
+
+            !=================================================================================
+
+
+            select case(trim(var_update(ivar)))
+            case ('U')
+                Hreset = check_coordinate(Hstag, 1)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % u, var, Hstag)
+            case ('V')
+                Hreset = check_coordinate(Hstag, 2)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % v, var, Hstag)
             case ('W')
-                nz = nz+1
-                call letkf_scatter_hcoord(wrf % xlat, lat, &
-                                          wrf % xlon, lon)
-                call letkf_scatter_vcoord(wrf % ph, nz, alt, 1)
-                call letkf_scatter_grid(  wrf % w,  nz, var)
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 1)
+                call letkf_scatter_grid  (wrf % w, var, Hstag)
             case ('T')
-                call letkf_scatter_hcoord(wrf % xlat, lat, &
-                                          wrf % xlon, lon)
-                call letkf_scatter_vcoord(wrf % ph, nz, alt)
-                call letkf_scatter_grid(  wrf % t,  nz, var)
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % t, var, Hstag)
             case ('QVAPOR')
-                call letkf_scatter_hcoord(wrf % xlat, lat, &
-                                          wrf % xlon, lon)
-                call letkf_scatter_vcoord(wrf % ph, nz, alt)
-                call letkf_scatter_grid(  wrf % qv, nz, var)
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % qv, var, Hstag)
             case ('QRAIN')
-                call letkf_scatter_hcoord(wrf % xlat, lat, &
-                                          wrf % xlon, lon)
-                call letkf_scatter_vcoord(wrf % ph, nz,  alt)
-                call letkf_scatter_grid(  wrf % qr, nz,  var)
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % qr, var, Hstag)
             case ('QSNOW')
-                call letkf_scatter_hcoord(wrf % xlat, lat, &
-                                          wrf % xlon, lon)
-                call letkf_scatter_vcoord(wrf % ph, nz,  alt)
-                call letkf_scatter_grid(  wrf % qs, nz,  var)
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % qs, var, Hstag)
             case ('QGRAUP')
-                call letkf_scatter_hcoord(wrf % xlat, lat, &
-                                          wrf % xlon, lon)
-                call letkf_scatter_vcoord(wrf % ph, nz,  alt)
-                call letkf_scatter_grid(  wrf % qg, nz,  var)
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % qg, var, Hstag)
             case ('QHAIL')
-                call letkf_scatter_hcoord(wrf % xlat, lat, &
-                                          wrf % xlon, lon)
-                call letkf_scatter_vcoord(wrf % ph, nz,  alt)
-                call letkf_scatter_grid(  wrf % qh, nz,  var)
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % qh, var, Hstag)
             case ('QNRAIN')
-                call letkf_scatter_hcoord(wrf % xlat, lat, &
-                                          wrf % xlon, lon)
-                call letkf_scatter_vcoord(wrf % ph,  nz,  alt)
-                call letkf_scatter_grid(  wrf % nqr, nz,  var)
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % nqr, var, Hstag)
             case ('QNSNOW')
-                call letkf_scatter_hcoord(wrf % xlat, lat, &
-                                          wrf % xlon, lon)
-                call letkf_scatter_vcoord(wrf % ph,  nz,  alt)
-                call letkf_scatter_grid(  wrf % nqs, nz,  var)
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % nqs, var, Hstag)
             case ('QNGRAUPEL')
-                call letkf_scatter_hcoord(wrf % xlat, lat, &
-                                          wrf % xlon, lon)
-                call letkf_scatter_vcoord(wrf % ph,  nz,  alt)
-                call letkf_scatter_grid(  wrf % nqg, nz,  var)
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % nqg, var, Hstag)
             case ('QNHAIL')
-                call letkf_scatter_hcoord(wrf % xlat, lat, &
-                                          wrf % xlon, lon)
-                call letkf_scatter_vcoord(wrf % ph,  nz,  alt)
-                call letkf_scatter_grid(  wrf % nqh, nz,  var)
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % nqh, var, Hstag)
+            case ('P')   !full pressure
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 0)
+                call letkf_scatter_grid  (wrf % p, var, Hstag)
+            case ('MU') !full MU
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag,-1)
+                if(allocated(wrf % mu)) then
+                    allocate(mu(nx, ny, 1))
+                    mu(:,:,1) = wrf % mu
+                end if
+                call letkf_scatter_grid  (mu, var, Hstag)
+            case ('PH')   !full geopotential height
+                Hreset = check_coordinate(Hstag, 0)
+                Vreset = check_coordinate(Vstag, 1)
+                call letkf_scatter_grid  (wrf % ph, var, Hstag)
             case default
                 print *, var_update(ivar)
                 stop "Need to code for unknown variable"
             end select
 
-            do j = 1, cpu(myid) % loc_ny
-            do i = 1, cpu(myid) % loc_nx
 
-                !horizontal localization
-                fail_h(1) = get_hlz(  'gts',   gts_lz, ivar, lat(i,j), lon(i,j))
-                fail_h(2) = get_hlz('radar', radar_lz, ivar, lat(i,j), lon(i,j))
+            if((.not. allocated(lat)) .or. &
+               (.not. allocated(lon)) .or. Hreset) then
 
-                if(all(fail_h)) cycle
+                if( allocated(lat) ) deallocate(lat)
+                if( allocated(lon) ) deallocate(lon)
+
+                allocate(lat( loc_nx, loc_ny ), &
+                         lon( loc_nx, loc_ny ))
+
+                select case (Hstag)
+                case(0)
+                    call letkf_scatter_hcoord(wrf % xlat,   lat, &
+                                              wrf % xlon,   lon, Hstag)
+                case(1)
+                    call letkf_scatter_hcoord(wrf % xlat_u, lat, &
+                                              wrf % xlon_u, lon, Hstag)
+                case(2)
+                    call letkf_scatter_hcoord(wrf % xlat_v, lat, &
+                                              wrf % xlon_v, lon, Hstag)
+                end select
+            end if
+
+
+            if(.not. allocated(alt) .or. Vreset) then
+
+                if( allocated(alt) ) deallocate(alt)
+
+                allocate(alt( cpu(myid)%loc_nx, &
+                              cpu(myid)%loc_ny, nz))
+
+                select case (Vstag)
+                case(-1)
+                    if(allocated(wrf % hgt)) then
+                        allocate(hgt(nx, ny, 1))
+                        hgt(:,:,1) = wrf % hgt
+                    end if
+                    call letkf_scatter_vcoord(      hgt, alt, Vstag)
+                    if(allocated(hgt)) deallocate(hgt)
+                case(0, 1)
+                    call letkf_scatter_vcoord(wrf % ph,  alt, Vstag)
+                end select
+            end if
+
+
+            do j = 1, cpu(myid)%loc_ny
+            do i = 1, cpu(myid)%loc_nx
+                xyz(1:2) = proj % lonlat_to_xy(lon(i,j), lat(i,j))
 
                 do k = 1, nz 
-                    !vertical localization
-                    if(fail_h(1)) then
-                        fail_v(1) = .true.
-                    else
-                        fail_v(1) = get_vlz(gts%platform,   gts_lz, ivar, alt(i,j,k))
-                    end if
+                    xyz(3)  = alt(i,j,k)
 
-                    if(fail_h(2)) then
-                        fail_v(2) = .true.
-                    else
-                        fail_v(2) = get_vlz(rad%radarobs, radar_lz, ivar, alt(i,j,k))
-                    end if
+                    !localization
+                    fail(1) = get_lz(  'gts',   gts_lz, ivar, xyz)
+                    fail(2) = get_lz('radar', radar_lz, ivar, xyz)
 
-                    if(all(fail_v)) cycle
+                    if(all(fail)) cycle
 
                     !collect data that we need
                     call letkf_yoyb(ivar,  gts,   gts_lz, &
@@ -163,54 +233,66 @@ contains
                         deallocate(yo, yb)
                     end if
 
-                    call destroy_vlz(  gts_lz)
-                    call destroy_vlz(radar_lz)
+                    if(allocated(  gts_lz)) deallocate(  gts_lz)
+                    if(allocated(radar_lz)) deallocate(radar_lz)
                 end do
+            end do
+            end do
 
-                if(allocated(  gts_lz)) deallocate(  gts_lz)
-                if(allocated(radar_lz)) deallocate(radar_lz)
-            end do
-            end do
 
             select case(trim(var_update(ivar)))
             case ('U')
-                call letkf_gather_grid(var, wrf % u, 1)
+                call letkf_gather_grid(var, wrf % u, Hstag)
             case ('V')                             
-                call letkf_gather_grid(var, wrf % v, 2)
+                call letkf_gather_grid(var, wrf % v, Hstag)
             case ('W')                             
-                call letkf_gather_grid(var, wrf % w)
+                call letkf_gather_grid(var, wrf % w, Hstag)
             case ('T')                             
-                call letkf_gather_grid(var, wrf % t)
+                call letkf_gather_grid(var, wrf % t, Hstag)
             case ('QVAPOR')
-                where(var < 0.) var = 0.
-                call letkf_gather_grid(var, wrf %  qv)
+                call letkf_tune_q(nz, var)
+                call letkf_gather_grid(var, wrf %  qv, Hstag)
             case ('QRAIN')                
-                where(var < 0.) var = 0.
-                call letkf_gather_grid(var, wrf %  qr)
+                call letkf_tune_q(nz, var)
+                call letkf_gather_grid(var, wrf %  qr, Hstag)
             case ('QSNOW')               
-                where(var < 0.) var = 0.
-                call letkf_gather_grid(var, wrf %  qs)
+                call letkf_tune_q(nz, var)
+                call letkf_gather_grid(var, wrf %  qs, Hstag)
             case ('QGRAUP')               
-                where(var < 0.) var = 0.
-                call letkf_gather_grid(var, wrf %  qg)
+                call letkf_tune_q(nz, var)
+                call letkf_gather_grid(var, wrf %  qg, Hstag)
             case ('QHAIL')                
-                where(var < 0.) var = 0.
-                call letkf_gather_grid(var, wrf %  qh)
+                call letkf_tune_q(nz, var)
+                call letkf_gather_grid(var, wrf %  qh, Hstag)
             case ('QNRAIN')               
-                where(var < 0.) var = 0.
-                call letkf_gather_grid(var, wrf % nqr)
+                call letkf_tune_q(nz, var)
+                call letkf_gather_grid(var, wrf % nqr, Hstag)
             case ('QNSNOW')               
-                where(var < 0.) var = 0.
-                call letkf_gather_grid(var, wrf % nqs)
+                call letkf_tune_q(nz, var)
+                call letkf_gather_grid(var, wrf % nqs, Hstag)
             case ('QNGRAUPEL')              
-                where(var < 0.) var = 0.
-                call letkf_gather_grid(var, wrf % nqg)
+                call letkf_tune_q(nz, var)
+                call letkf_gather_grid(var, wrf % nqg, Hstag)
             case ('QNHAIL')               
-                where(var < 0.) var = 0.
-                call letkf_gather_grid(var, wrf % nqh)
+                call letkf_tune_q(nz, var)
+                call letkf_gather_grid(var, wrf % nqh, Hstag)
+            case ('P')               
+                call letkf_gather_grid(var, wrf % p,   Hstag)
+            case ('MU')               
+                call letkf_gather_grid(var,      mu,   Hstag)
+                if(allocated(mu)) then
+                    wrf % mu = mu(:,:,1)
+                    deallocate(mu)
+                end if
+            case ('PH')               
+                call letkf_gather_grid(var, wrf % ph,  Hstag)
             case default
                 stop "Need to code for unknown variable"
             end select
+
+
+            deallocate(var)
+            call destroy_tree
 
         end do update
     end subroutine letkf_driver
@@ -239,10 +321,10 @@ contains
         type(radar_variable_config), pointer :: radar_var => null()
 
         real,    dimension(nmember)         :: bg
-        real                                :: mean, omm, std, err, f1, f2
-        real                                :: hclr_inv, vclr_inv,  hclr_rej, vclr_rej, hdist, vdist
+        real                                :: mean, omm, std, err
         real                                :: error_inv
-        integer                             :: i, j, k, obs_type, idx, total
+        integer                             :: i, j, k, obs_type, total
+        integer                             :: nvar
         real,    dimension(:), allocatable  :: err_muti, err_rej
         logical, dimension(:), allocatable  :: is_assim
 
@@ -252,7 +334,7 @@ contains
             do i = 1, size(gts_lz)
                 obs_type = gts_lz(i) % mytype
 
-                if(allocated(gts_lz(i)%vert)) then
+                if(allocated(gts_lz(i)%idx)) then
                     select case (obs_type)
                     case (synop, ships, metar)
                         select case(obs_type)
@@ -264,15 +346,22 @@ contains
                             obs_nml  => metar_nml
                         end select
 
-                        allocate(err_muti (5), &
-                                 err_rej  (5), &
-                                 is_assim (5))
+                        nvar = 5
 
-                        is_assim  = [ obs_nml%u%is_assim(ivar), &
-                                      obs_nml%v%is_assim(ivar), &  
-                                      obs_nml%t%is_assim(ivar), &  
-                                      obs_nml%p%is_assim(ivar), &  
-                                      obs_nml%q%is_assim(ivar) ]
+                        allocate(err_muti (nvar), &
+                                 err_rej  (nvar), &
+                                 is_assim (nvar))
+
+                        if(obs_nml%hclr(ivar) > 0.) then
+                            is_assim  = [ obs_nml%u%is_assim(ivar), &
+                                          obs_nml%v%is_assim(ivar), &  
+                                          obs_nml%t%is_assim(ivar), &  
+                                          obs_nml%p%is_assim(ivar), &  
+                                          obs_nml%q%is_assim(ivar) ]
+                        else
+                            is_assim  = .false.
+                        end if
+
                         err_muti  = [ obs_nml%u%err_muti, &
                                       obs_nml%v%err_muti, &
                                       obs_nml%t%err_muti, &
@@ -286,14 +375,21 @@ contains
                     case (sound)
                         obs_nml  => sound_nml
 
-                        allocate(err_muti (4), &
-                                 err_rej  (4), &
-                                 is_assim (4))
+                        nvar = 4
 
-                        is_assim  = [ obs_nml%u%is_assim(ivar), &
-                                      obs_nml%v%is_assim(ivar), &  
-                                      obs_nml%t%is_assim(ivar), &  
-                                      obs_nml%q%is_assim(ivar) ]
+                        allocate(err_muti (nvar), &
+                                 err_rej  (nvar), &
+                                 is_assim (nvar))
+
+                        if(obs_nml%hclr(ivar) > 0.) then
+                            is_assim  = [ obs_nml%u%is_assim(ivar), &
+                                          obs_nml%v%is_assim(ivar), &  
+                                          obs_nml%t%is_assim(ivar), &  
+                                          obs_nml%q%is_assim(ivar) ]
+                        else
+                            is_assim  = .false.
+                        end if
+
                         err_muti  = [ obs_nml%u%err_muti, &
                                       obs_nml%v%err_muti, &
                                       obs_nml%t%err_muti, &
@@ -302,24 +398,34 @@ contains
                                       obs_nml%v%err_rej, &
                                       obs_nml%t%err_rej, &
                                       obs_nml%q%err_rej ]
+                    case (gpspw)
+                        obs_nml  => gpspw_nml
+
+                        nvar = 1
+
+                        allocate(err_muti (nvar), &
+                                 err_rej  (nvar), &
+                                 is_assim (nvar))
+
+                        if(obs_nml%hclr(ivar) > 0.) then
+                            is_assim  = obs_nml%tpw%is_assim(ivar)
+                        else
+                            is_assim  = .false.
+                        end if
+
+                        err_muti  = obs_nml%tpw%err_muti
+                        err_rej   = obs_nml%tpw%err_rej
                     end select
 
-                    hclr_inv  =   1.0 / (obs_nml%hclr(ivar) * 1e3)
-                    hclr_rej  =   obs_nml%hclr_rej
-                    vclr_inv  =   1.0 / (obs_nml%vclr(ivar) * 1e3)
-                    vclr_rej  =   obs_nml%vclr_rej
 
-                    do j = 1, size(gts_lz(i)%vert%idx)
-
-                        idx   = gts_lz(i)%vert%idx(j)
-                        hdist = gts_lz(i)%vert%hdistance(j)
-                        vdist = gts_lz(i)%vert%vdistance(j)
-
-                        associate( qc    => gts % platform(obs_type) % qc,    &
-                                   error => gts % platform(obs_type) % error, &
-                                   obs   => gts % platform(obs_type) % obs,   &
-                                   hdxb  => gts % platform(obs_type) % hdxb )
-                            do k = 1, size(obs, 1)
+                    do j = 1, size(gts_lz(i)%idx)  !loop over available data
+                        associate( idx     => gts_lz(i) % idx(j),               &
+                                   r2      => gts_lz(i) % r2(j),                & 
+                                   qc      => gts % platform(obs_type) % qc,    &
+                                   error   => gts % platform(obs_type) % error, &
+                                   obs     => gts % platform(obs_type) % obs,   &
+                                   hdxb    => gts % platform(obs_type) % hdxb )
+                            do k = 1, nvar  !number of observation variables
                                 if(is_assim(k) .and. any(qc(k,idx,:) >= 0)) then
                                     bg    = hdxb(k,idx,:)
                                     mean  = sum(bg) * nmember_inv
@@ -330,14 +436,18 @@ contains
 
                                     if(abs(omm) > sqrt(std * std + err * err) * err_rej(k)) cycle
 
-                                    f1    = hdist * hclr_rej * hclr_inv
-                                    f2    = vdist * vclr_rej * vclr_inv
-
                                     !variance = variance * exp(r^2 / (2 * rloc^2))
                                     !note! We multiply localization funcion  on error not variance
                                     !so the weighting function should be square root
                                     !that's why it is 0.25 not 0.5 here
-                                    error_inv = 1.0 / (err * exp( 0.25 * (f1*f1 + f2*f2) ))
+                                    if(weight_function /= 1) then
+                                        error_inv = 1.0 / (err * exp( 0.25 * r2 ))
+                                    else
+                                        !Gaspari_Cohn_1999's input must be r
+                                        !Gaspari_Cohn_1999 is applied on variance, but here is error,
+                                        !so you need square root 
+                                        error_inv = sqrt(Gaspari_Cohn_1999(sqrt(r2))) / err
+                                    end if
                                     omm       = omm * error_inv
                                     bg        = bg  * error_inv
                                     call append(head, current, omm, bg)
@@ -362,10 +472,7 @@ contains
             do i = 1, size(radar_lz)
                 obs_type = radar_lz(i) % mytype
 
-                if(allocated(radar_lz(i)%vert)) then
-                    hclr_rej  =   radar_nml%hclr_rej
-                    vclr_rej  =   radar_nml%vclr_rej
-
+                if(allocated(radar_lz(i)%idx)) then
                     select case (obs_type)
                     case (dbz)
                         radar_var => radar_nml%dbz
@@ -377,20 +484,16 @@ contains
                         radar_var => radar_nml%kdp
                     end select
 
-                    hclr_inv     =  1.0 / (radar_var%hclr(ivar) * 1e3)
-                    vclr_inv     =  1.0 / (radar_var%vclr(ivar) * 1e3)
-                    is_assim(1)  =  radar_var%is_assim(ivar)
+                    is_assim(1)  =  radar_var%hclr(ivar) > 0.
                     err_muti(1)  =  radar_var%error
                     err_rej(1)   =  radar_var%err_rej
  
-                    do j = 1, size(radar_lz(i)%vert%idx)
-                        idx   = radar_lz(i)%vert%idx(j)
-                        hdist = radar_lz(i)%vert%hdistance(j)
-                        vdist = radar_lz(i)%vert%vdistance(j)
-
-                        if(is_assim(1)) then
-                            associate( hdxb => rad % radarobs(obs_type) % hdxb, &
-                                       obs  => rad % radarobs(obs_type) % obs )
+                    if(is_assim(1)) then
+                        do j = 1, size(radar_lz(i)%idx)
+                            associate( idx     => radar_lz(i) % idx(j),            &
+                                       r2      => radar_lz(i) % r2(j),             & 
+                                       hdxb    => rad % radarobs(obs_type) % hdxb, &
+                                       obs     => rad % radarobs(obs_type) % obs )
                                 bg    = hdxb(idx,:)
                                 mean  = sum(bg) * nmember_inv
                                 bg    = bg - mean
@@ -405,22 +508,27 @@ contains
                                 else
                                     if(abs(omm) > sqrt(std * std + err * err) * err_rej(1)) cycle
                                 end if
-                            end associate
 
-                            f1    = hdist * hclr_rej * hclr_inv
-                            f2    = vdist * vclr_rej * vclr_inv
-                            !variance = variance * exp(r^2 / (2 * rloc^2))
-                            !note! We multiply localization funcion  on error not variance
-                            !so the weighting function should be square root
-                            !that's why it is 0.25 not 0.5 here
-                            error_inv = 1.0 / (err * exp( 0.25 * (f1*f1 + f2*f2) ))
-                            omm       = omm * error_inv
-                            bg        = bg  * error_inv
-                            call append(head, current, omm, bg)
+                                !variance = variance * exp(r^2 / (2 * rloc^2))
+                                !note! We multiply localization funcion  on error not variance
+                                !so the weighting function should be square root
+                                !that's why it is 0.25 not 0.5 here
+                                if(weight_function /= 1) then
+                                    error_inv = 1.0 / (err * exp( 0.25 * r2 ))
+                                else
+                                    !Gaspari_Cohn_1999's input must be r
+                                    !Gaspari_Cohn_1999 is applied on variance, but here is error,
+                                    !so you need square root 
+                                    error_inv = sqrt(Gaspari_Cohn_1999(sqrt(r2))) / err
+                                end if
+                                omm       = omm * error_inv
+                                bg        = bg  * error_inv
+                                call append(head, current, omm, bg)
+                            end associate
  
                             total = total+1
-                        end if
-                    end do
+                        end do
+                    end if
 
                     nullify(radar_var)
                 end if
@@ -497,7 +605,7 @@ contains
         real,   dimension(nmember)             :: xa
 
         !local
-        integer                                :: i, nobs, shp(2)
+        integer                                :: i, nobs
 #ifdef REAL64
         real*8                                 :: xb_mean, inflat_r8
         real*8, dimension(nmember)             :: xb_prime, wbar
@@ -528,16 +636,15 @@ contains
         end do
 #endif
 
-        shp  = shape(yb)
-        nobs = shp(2)
+        nobs = size(yo)
 
 #ifdef REAL64
-        allocate(yb_r8(shp(1), shp(2)), yo_r8(nobs))
+        allocate(yb_r8(nmember, nobs), yo_r8(nobs))
 
         !real to double
-        inflat_r8  = inflat
-        yb_r8      = yb
-        yo_r8      = yo
+        inflat_r8  = dble(inflat)
+        yb_r8      = dble(yb)
+        yo_r8      = dble(yo)
 
         call dsyrk('l', 'n', nmember, nobs, 1d0, yb_r8, nmember, inflat_r8, identity, nmember)
         call inverse_matrix(identity, nmember)
@@ -574,7 +681,7 @@ contains
 
         !=====================================================================================
 
-        if(use_RTPP .or. use_RTPP) then
+        if(use_RTPP .or. use_RTPS) then
             xa_mean  = sum(xa) * nmember_inv
             xa_prime = xa - xa_mean
 
@@ -591,5 +698,52 @@ contains
         end if
 
     end function letkf_solve
+
+    subroutine letkf_tune_q(nz, q)
+        implicit none
+        integer,                  intent(in)                :: nz
+        real, dimension(:,:,:,:), intent(inout), contiguous :: q
+
+        !local
+        integer                     :: i, j, k
+        real                        :: ratio
+        real,    dimension(nmember) :: var
+        logical, dimension(nmember) :: is_positive
+
+        do k = 1, nz
+        do j = 1, cpu(myid) % loc_ny
+        do i = 1, cpu(myid) % loc_nx
+
+            var              = q(i, j, k, :)
+            is_positive      = var > 0.
+            ratio            = sum(var) / sum(var, mask=is_positive)
+
+            !tune q to eliminate negative value but preserve mean
+            where( var < 0. )
+                var = 0.
+            else where
+                var = ratio * var
+            end where
+
+            q(i, j, k, :) = var
+
+        end do
+        end do
+        end do
+    end subroutine letkf_tune_q
+
+    function check_coordinate(previous, now) result(reset)
+        implicit none
+        integer, intent(inout) :: previous
+        integer, intent(in)    :: now
+        logical                :: reset
+
+        if(previous /= now) then
+            previous = now
+            reset = .true.
+        else
+            reset = .false.
+        end if
+    end function check_coordinate
 
 end module letkf_core

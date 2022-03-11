@@ -1,38 +1,29 @@
 module localization
-!   use kdtree2_module
+    use kdtree2_module
     use gts_omboma
     use simulated_radar
     use config
     use param
-    use kdtree
     implicit none
 
     private
-    public   :: lz_structure, build_tree, destroy_tree, get_hlz, get_vlz, destroy_vlz
+    public   :: lz_structure, build_tree, destroy_tree, get_lz, Gaspari_Cohn_1999
 
     type kdtree_type
         integer                :: mytype
-!       type(kdtree2), pointer :: tree
-        type(kd_root)          :: tree
+        type(kdtree2), pointer :: tree
     end type kdtree_type
-
-    type vlz_structure
-        integer, dimension(:), allocatable  :: idx
-        real,    dimension(:), allocatable  :: hdistance
-        real,    dimension(:), allocatable  :: vdistance
-    end type vlz_structure
 
     type lz_structure
         integer                             :: mytype
         integer, dimension(:), allocatable  :: idx
-        real,    dimension(:), allocatable  :: hdistance
-        type(vlz_structure),   allocatable  :: vert
+        real,    dimension(:), allocatable  :: r2
     end type lz_structure
 
     type list_type
-        integer                       :: idx
-        real                          :: hdistance
-        real                          :: vdistance
+        integer                       :: obs_type
+        real                          :: hclr_inv
+        real                          :: vclr_inv
         type(list_type), pointer      :: next => null()
     end type list_type
 
@@ -41,7 +32,7 @@ module localization
 
 contains
 
-    function build_tree(obs) result(succeed)
+    function build_tree(obs, ivar) result(succeed)
         implicit none
         class(obs_structure), dimension(:), intent(in)  :: obs
         logical                                         :: succeed
@@ -50,8 +41,12 @@ contains
         type(kdtree_type), dimension(:), pointer :: tree    => null()
         type(list_type),                 pointer :: head    => null()
         type(list_type),                 pointer :: current => null()
-        integer                                  :: i, obs_type, ntype
-        logical                                  :: use_this
+        type(gts_config),                pointer :: gts_nml => null()
+        type(radar_variable_config),     pointer :: rad_nml => null()
+        integer                                  :: i, ivar, obs_type, ntype
+        integer                                  :: dim
+        real                                     :: hclr_inv, vclr_inv
+        real, dimension(:,:), allocatable        :: xyz
 
         ntype    = 0
         succeed  = .false.
@@ -59,27 +54,37 @@ contains
         select type (obs)
         type is (gts_structure)
 
-            do obs_type = 1, num_gts_indexes
+            do obs_type = 1, num_gts_indexes     !loop all gts data type
                 if(obs(obs_type)%nobs > 0) then
                     select case (obs_type)
                     case (synop)
-                        use_this = synop_nml%use_it
+                        gts_nml => synop_nml
                     case (metar)
-                        use_this = metar_nml%use_it
+                        gts_nml => metar_nml
                     case (ships)
-                        use_this = ships_nml%use_it
+                        gts_nml => ships_nml
                     case (sound)
-                        use_this = sound_nml%use_it
+                        gts_nml => sound_nml
                     case (gpspw)
-                        use_this = gpspw_nml%use_it
+                        gts_nml => gpspw_nml
                     case default
-                        use_this = .false.
+                        cycle
                     end select
 
-                    if(use_this) then
-                        ntype = ntype + 1
-                        call append(head, current, obs_type)
+                    if(gts_nml % use_it .and. gts_nml%hclr(ivar) > 0.) then
+                        ntype    = ntype + 1
+                        hclr_inv = 1.0 / (gts_nml%hclr(ivar)  * 1e3)
+
+                        if(gts_nml%vclr(ivar) > 0.) then
+                            vclr_inv = 1.0 / (gts_nml%vclr(ivar)  * 1e3)
+                        else
+                            vclr_inv = -1. !no vertical localization
+                        end if
+
+                        call append(head, current, obs_type, hclr_inv, vclr_inv)
                     end if
+
+                    if(associated(gts_nml)) nullify(gts_nml)
                 end if
             end do
 
@@ -94,21 +99,31 @@ contains
                 if(obs(obs_type)%nobs > 0) then
                     select case (obs_type)
                     case (dbz)
-                        use_this = radar_nml%dbz%use_it
+                        rad_nml => radar_nml%dbz
                     case (vr)
-                        use_this = radar_nml%vr%use_it
+                        rad_nml => radar_nml%vr
                     case (zdr)
-                        use_this = radar_nml%zdr%use_it
+                        rad_nml => radar_nml%zdr
                     case (kdp)
-                        use_this = radar_nml%kdp%use_it
+                        rad_nml => radar_nml%kdp
                     case default
-                        use_this = .false.
+                        cycle
                     end select
 
-                    if(use_this) then
-                        ntype = ntype + 1
-                        call append(head, current, obs_type)
+                    if(rad_nml % use_it .and. rad_nml%hclr(ivar) > 0.) then
+                        ntype    = ntype + 1
+                        hclr_inv = 1.0 / (rad_nml%hclr(ivar)  * 1e3)
+
+                        if(rad_nml%vclr(ivar) > 0.) then
+                            vclr_inv = 1.0 / (rad_nml%vclr(ivar)  * 1e3)
+                        else
+                            vclr_inv = -1. !no vertical localization
+                        end if
+
+                        call append(head, current, obs_type, hclr_inv, vclr_inv)
                     end if
+
+                    if(associated(rad_nml)) nullify(rad_nml)
                 end if
             end do
 
@@ -126,9 +141,24 @@ contains
         current => head
         do i = 1, ntype
             if(i > 1) current => current % next
-            obs_type       =  current % idx
+            obs_type       =  current % obs_type
             tree(i)%mytype =  obs_type
-            call kd_init(tree(i)%tree, obs(obs_type)%lon, obs(obs_type)%lat)
+
+            !normalize by localization length scale
+            allocate(xyz, source=obs(obs_type)%xyz)
+            xyz(1:2,:) = xyz(1:2,:) * current % hclr_inv
+
+            if(vclr_inv > 0.) then
+                dim      = 3
+                xyz(3,:) = xyz(3,:) * current % vclr_inv
+            else
+                dim      = 2
+                xyz(3,:) = -1.
+            end if
+
+            !build kdtree for this variable
+            tree(i)%tree => kdtree2_create(xyz, dim=dim)
+            deallocate(xyz)
         end do
 
         nullify(tree, current)
@@ -142,32 +172,38 @@ contains
 
         if(allocated(radar_tree)) then
             do i = 1, size(radar_tree)
-                call kd_free(radar_tree(i)%tree)
+                call kdtree2_destroy(radar_tree(i)%tree)
             end do
             deallocate(radar_tree)
         end if
 
         if(allocated(gts_tree)) then
             do i = 1, size(gts_tree)
-                call kd_free(gts_tree(i)%tree)
+                call kdtree2_destroy(gts_tree(i)%tree)
             end do
             deallocate(  gts_tree)
         end if
     end subroutine destroy_tree
 
-    function get_hlz(name, obs_lz, ivar, lat, lon) result(fail)
+    function get_lz(name, obs_lz, ivar, xyz) result(fail)
         implicit none
         character(len=*),                              intent(in)     :: name
         type(lz_structure), dimension(:), allocatable, intent(in out) :: obs_lz
+        real,               dimension(3),              intent(in)     :: xyz
         integer,                                       intent(in)     :: ivar
-        real,                                          intent(in)     :: lat, lon
         logical                                                       :: fail
 
         !local
-        integer, dimension(max_lz_pts) :: idx
-        real,    dimension(max_lz_pts) :: distance
-        integer                        :: i, nlz
-        real                           :: hclr
+        type(kdtree2_result), dimension(:), allocatable :: results
+        type(gts_config),                   pointer     :: gts_nml => null()
+        type(radar_variable_config),        pointer     :: rad_nml => null()
+
+        !normalized searching radius
+        real, parameter                                 :: r2 = gc1999 * gc1999
+
+        integer                                         :: i, nlz
+        real                                            :: hclr_inv, vclr_inv
+        real,                 dimension(3)              :: tmp
 
         fail = .true.
 
@@ -178,37 +214,57 @@ contains
             allocate(obs_lz(size(gts_tree)))
 
             do i = 1, size(gts_tree)
-                obs_lz(i) % mytype    = gts_tree(i) % mytype
+                obs_lz(i) % mytype = gts_tree(i) % mytype
 
                 select case(gts_tree(i) % mytype)
                 case (synop)
-                    hclr =  synop_nml%hclr(ivar)  * 1e3
+                    gts_nml => synop_nml
                 case (metar)
-                    hclr =  metar_nml%hclr(ivar)  * 1e3
-                case (gpspw)
-                    hclr =  gpspw_nml%hclr(ivar)  * 1e3
+                    gts_nml => metar_nml
                 case (ships)
-                    hclr =  ships_nml%hclr(ivar)  * 1e3
+                    gts_nml => ships_nml
                 case (sound)
-                    hclr =  sound_nml%hclr(ivar)  * 1e3
-                case default
-                    stop "Unknown obs type"
+                    gts_nml => sound_nml
+                case (gpspw)
+                    gts_nml => gpspw_nml
                 end select
 
-                if( hclr > 0. ) then
-                    call kd_search_radius(gts_tree(i) % tree, lon, lat, &
-                                          hclr, idx, distance, nlz)
+                allocate(results(gts_nml%max_lz_pts))
 
-                    if(nlz > 0) then
-                        fail = .false.
+                hclr_inv = 1.0 / (gts_nml%hclr(ivar)  * 1e3)
 
-                        allocate(obs_lz(i) %       idx(nlz), &
-                                 obs_lz(i) % hdistance(nlz))
-
-                        obs_lz(i) % idx       = idx(1:nlz)
-                        obs_lz(i) % hdistance = distance(1:nlz)
-                    end if
+                if(gts_nml%vclr(ivar) > 0.) then
+                    vclr_inv = 1.0 / (gts_nml%vclr(ivar)  * 1e3)
+                else
+                    vclr_inv = -1.0
                 end if
+
+                !normalize by localization length scale
+                tmp(1:2) = xyz(1:2) * hclr_inv
+
+                if(vclr_inv > 0.) then  !3D localization
+                    tmp(3) = xyz(3) * vclr_inv
+
+                    !NOTE: the radius of kdtree2 is r2 not r
+                    call kdtree2_r_nearest(gts_tree(i) % tree, tmp(1:3), r2, nlz, gts_nml%max_lz_pts, results)
+                else !2D localization
+                    !NOTE: the radius of kdtree2 is r2 not r
+                    call kdtree2_r_nearest(gts_tree(i) % tree, tmp(1:2), r2, nlz, gts_nml%max_lz_pts, results)
+                end if
+
+                nullify(gts_nml)
+
+                if(nlz > 0) then
+                    fail = .false.
+
+                    allocate(obs_lz(i) % idx(nlz), &
+                             obs_lz(i) % r2(nlz))
+
+                    obs_lz(i) % idx = results(1:nlz) % idx
+                    obs_lz(i) % r2  = results(1:nlz) % dis
+                end if
+
+                deallocate(results)
             end do
         case ('radar')
             if(.not. allocated(radar_tree)) return
@@ -216,35 +272,55 @@ contains
             allocate(obs_lz(size(radar_tree)))
 
             do i = 1, size(radar_tree)
-                obs_lz(i) % mytype    = radar_tree(i) % mytype
+                obs_lz(i) % mytype = radar_tree(i) % mytype
 
-                select case(radar_tree(i) % mytype)
+                select case (radar_tree(i) % mytype)
                 case (dbz)
-                    hclr = radar_nml%dbz%hclr(ivar) * 1e3
+                    rad_nml => radar_nml%dbz
                 case (vr)
-                    hclr = radar_nml% vr%hclr(ivar) * 1e3
+                    rad_nml => radar_nml%vr
                 case (zdr)
-                    hclr = radar_nml%zdr%hclr(ivar) * 1e3
+                    rad_nml => radar_nml%zdr
                 case (kdp)
-                    hclr = radar_nml%kdp%hclr(ivar) * 1e3
-                case default
-                    stop "Unknown obs type"
+                    rad_nml => radar_nml%kdp
                 end select
 
-                if( hclr > 0. ) then
-                    call kd_search_radius(radar_tree(i) % tree, lon, lat, &
-                                          hclr, idx, distance, nlz)
+                allocate(results(rad_nml%max_lz_pts))
 
-                    if(nlz > 0) then
-                        fail = .false.
+                hclr_inv = 1.0 / (rad_nml%hclr(ivar)  * 1e3)
 
-                        allocate(obs_lz(i) %       idx(nlz), &
-                                 obs_lz(i) % hdistance(nlz))
-
-                        obs_lz(i) % idx       = idx(1:nlz)
-                        obs_lz(i) % hdistance = distance(1:nlz)
-                    end if
+                if(rad_nml%vclr(ivar) > 0.) then
+                    vclr_inv = 1.0 / (rad_nml%vclr(ivar)  * 1e3)
+                else
+                    vclr_inv = -1.0
                 end if
+
+                !normalize by localization length scale
+                tmp(1:2) = xyz(1:2) * hclr_inv
+
+                if(vclr_inv > 0.) then  !3D localization
+                    tmp(3) = xyz(3) * vclr_inv
+
+                    !NOTE: the radius of kdtree2 is r2 not r
+                    call kdtree2_r_nearest(radar_tree(i) % tree, tmp(1:3), r2, nlz, rad_nml%max_lz_pts, results)
+                else !2D localization
+                    !NOTE: the radius of kdtree2 is r2 not r
+                    call kdtree2_r_nearest(radar_tree(i) % tree, tmp(1:2), r2, nlz, rad_nml%max_lz_pts, results)
+                end if
+
+                nullify(rad_nml)
+
+                if(nlz > 0) then
+                    fail = .false.
+
+                    allocate(obs_lz(i) % idx(nlz), &
+                             obs_lz(i) % r2(nlz))
+
+                    obs_lz(i) % idx = results(1:nlz) % idx
+                    obs_lz(i) % r2  = results(1:nlz) % dis  !return is also r2
+                end if
+
+                deallocate(results)
             end do
         case default
             stop "Error: Unknown name!"
@@ -252,157 +328,49 @@ contains
 
         if(fail) deallocate(obs_lz)
  
-    end function get_hlz
+    end function get_lz
 
-    function get_vlz(obs, obs_lz, ivar, alt) result(fail)
+    pure function Gaspari_Cohn_1999(x) result(func)
         implicit none
-        class(obs_structure), dimension(:), intent(in)     :: obs
-        type(  lz_structure), dimension(:), intent(in out) :: obs_lz
-        integer,                            intent(in)     :: ivar
-        real,                               intent(in)     :: alt
-        logical                                            :: fail
+        real, intent(in) :: x
+        real             :: func
 
         !local
-        type(list_type), pointer :: head    => null()
-        type(list_type), pointer :: current => null()
-        integer                  :: i, j, idx, obs_type, nlz
-        real                     :: vdistance, vclr
+        real, parameter  :: a  = sqrt(10. / 3.)
+        real, parameter  :: a1 = -0.25 
+        real, parameter  :: a2 = 0.5
+        real, parameter  :: a3 = 0.625
+        real, parameter  :: a4 = -5./3.
+        real, parameter  :: a5 = 1.
+        real, parameter  :: b1 = 1./12.
+        real, parameter  :: b2 = -0.5
+        real, parameter  :: b3 = 0.625
+        real, parameter  :: b4 = 5./3.
+        real, parameter  :: b5 = -5.
+        real, parameter  :: b6 = 4.
+        real, parameter  :: b7 = -2./3.
+        real             :: z
 
-        fail = .true.
+        !x is already normalized by length scale
+        z = x / a
 
-        select type (obs)
-        type is (radar_structure)
-            do i = 1, size(obs_lz)
-                if(.not. allocated(obs_lz(i) % idx)) cycle
-
-                nlz      = 0
-                obs_type = obs_lz(i) % mytype
-
-                select case (obs_type)
-                case (dbz)
-                    vclr = radar_nml%dbz%vclr(ivar) * 1e3
-                case (vr)
-                    vclr = radar_nml% vr%vclr(ivar) * 1e3
-                case (zdr)
-                    vclr = radar_nml%zdr%vclr(ivar) * 1e3
-                case (kdp)
-                    vclr = radar_nml%kdp%vclr(ivar) * 1e3
-                end select
-
-                if( vclr > 0. ) then
-                    do j = 1, size(obs_lz(i)%idx)
-                        idx = obs_lz(i)%idx(j)
-                        vdistance = abs(obs(obs_type)%alt(idx) - alt)
-                        if(vdistance < vclr) then
-                            nlz = nlz+1
-                            call append(head, current, idx, obs_lz(i)%hdistance(j), vdistance)
-                        end if
-                    end do
-
-                    if(nlz > 0) then
-                        fail = .false.
-
-                        allocate(obs_lz(i)%vert)
-                        allocate(obs_lz(i)%vert%idx      (nlz), &
-                                 obs_lz(i)%vert%hdistance(nlz), &
-                                 obs_lz(i)%vert%vdistance(nlz))
-
-                        current => head
-                        do j = 1, nlz
-                            if(j > 1) current => current%next
-
-                            obs_lz(i)%vert%idx(j)       = current%idx
-                            obs_lz(i)%vert%hdistance(j) = current%hdistance
-                            obs_lz(i)%vert%vdistance(j) = current%vdistance
-                        end do
-
-
-                        nullify(current)
-                        call destroy(head)
-                    end if
-                end if
-            end do
-
-        type is (gts_structure)
-            do i = 1, size(obs_lz)
-                if(.not. allocated(obs_lz(i) % idx)) cycle
-
-                nlz      = 0
-                obs_type = obs_lz(i) % mytype
-
-                select case (obs_type)
-                case (synop)
-                    vclr =  synop_nml%vclr(ivar)  * 1e3
-                case (metar)
-                    vclr =  metar_nml%vclr(ivar)  * 1e3
-                case (gpspw)
-                    vclr =  gpspw_nml%vclr(ivar)  * 1e3
-                case (ships)
-                    vclr =  ships_nml%vclr(ivar)  * 1e3
-                case (sound)
-                    vclr =  sound_nml%vclr(ivar)  * 1e3
-                end select
-     
-                if( vclr > 0. ) then
-                    do j = 1, size(obs_lz(i)%idx)
-                        idx = obs_lz(i)%idx(j)
-                        vdistance = abs(obs(obs_type)%alt(idx) - alt)
-                        if(vdistance < vclr) then
-                            nlz = nlz+1
-                            call append(head, current, idx, obs_lz(i)%hdistance(j), vdistance)
-                        end if
-                    end do
-
-                    if(nlz > 0) then
-                        fail = .false.
-
-                        allocate(obs_lz(i)%vert)
-                        allocate(obs_lz(i)%vert%idx      (nlz), &
-                                 obs_lz(i)%vert%hdistance(nlz), &
-                                 obs_lz(i)%vert%vdistance(nlz))
-
-                        current => head
-                        do j = 1, nlz
-                            if(j > 1) current => current%next
-
-                            obs_lz(i)%vert%idx(j)       = current%idx
-                            obs_lz(i)%vert%hdistance(j) = current%hdistance
-                            obs_lz(i)%vert%vdistance(j) = current%vdistance
-                        end do
-
-
-                        nullify(current)
-                        call destroy(head)
-                    end if
-                end if
-            end do
-        class default
-            stop "Unknown type!"
-        end select
-
-    end function get_vlz
-
-    subroutine destroy_vlz(obs_lz)
-        implicit none
-        type(lz_structure), dimension(:), allocatable, intent(in out) :: obs_lz
-
-        !local
-        integer :: i
-
-        if(allocated(obs_lz)) then
-            do i = 1, size(obs_lz)
-                if(allocated(obs_lz(i)%vert)) deallocate(obs_lz(i)%vert)
-            end do
+        if( z <= 1. ) then
+            func = z * z * ( z * ( z * ( a1 * z + a2 ) + a3 ) + a4 ) + a5
+        else if( z <= 2. ) then
+            func = z * ( z * ( z * ( z * ( b1 * z + b2 ) + b3 ) + b4 ) + b5 ) + b6 + b7 / z
+        else
+            func = 0.
         end if
-    end subroutine destroy_vlz
+    end function Gaspari_Cohn_1999
+
 
     !=============================================================
 
-    subroutine append(head, current, idx, hdistance, vdistance)
+    subroutine append(head, current, obs_type, hclr_inv, vclr_inv)
         implicit none
         type(list_type), pointer, intent(in out) :: head, current
-        integer,                  intent(in)     :: idx
-        real,           optional, intent(in)     :: hdistance, vdistance
+        integer,                  intent(in)     :: obs_type
+        real,           optional, intent(in)     :: hclr_inv, vclr_inv
 
 
         if(associated(head)) then
@@ -413,9 +381,9 @@ contains
             current => head
         end if
 
-        current % idx = idx
-        if(present(hdistance)) current % hdistance = hdistance
-        if(present(vdistance)) current % vdistance = vdistance
+        current % obs_type = obs_type
+        if(present(hclr_inv)) current % hclr_inv = hclr_inv
+        if(present(vclr_inv)) current % vclr_inv = vclr_inv
     end subroutine append
 
     subroutine destroy(head)
