@@ -178,28 +178,28 @@ contains
             open(99, file='rsl.out.0000', form='formatted')
             do i = 1, nproc
                 write(99, *) '==========================================='
-                write(99, *) i
+                write(99, 2001) i, cpu(i-1)%loc_nx, cpu(i-1)%loc_ny
                 write(99, *) cpu(i-1)%xloc
                 write(99, *) cpu(i-1)%yloc
             end do
             close(99)
         end if
+ 2001   format("process(",i3,")",2x,"dims:",1x,"(",i3,",",i3,")")
     end subroutine letkf_local_info
 
-    subroutine letkf_scatter_grid(global, nz, local, iuv)
+    subroutine letkf_scatter_grid(global, local, stagger)
 
         implicit none
 
-        real, dimension(:,:,:),                intent(in)  :: global
-        real, dimension(:,:,:,:), allocatable, intent(out) :: local
-        integer,                               intent(in)  :: nz
-        integer,                  optional,    intent(in)  :: iuv
+        real, dimension(:,:,:),   intent(in)  :: global
+        real, dimension(:,:,:,:), intent(out) :: local
+        integer,                  intent(in)  :: stagger
 
         !local
-        integer                               :: i, nx, ny
+        integer                               :: i, nx, ny, nz
         integer                               :: loc_nx, loc_ny
         integer                               :: st, ed
-        integer                               :: igrid
+        integer, dimension(4)                 :: dims
         integer, dimension(:), pointer        :: idxx => null()
         integer, dimension(:), pointer        :: idxy => null()
         real,    dimension(:), allocatable    :: tmp
@@ -209,22 +209,10 @@ contains
         integer, dimension(0:nproc-1)         :: sendcnts, sdispls
         integer, dimension(0:nproc-1)         :: recvcnts, rdispls
 
-        !Initialization
-        igrid = 0
-        if(present(iuv)) igrid = iuv
-
-        !determine shape of local array
-        nx = cpu(myid) % loc_nx
-        ny = cpu(myid) % loc_ny
-
-        select case (igrid)
-        case (1)
-            nx = cpu(myid) % loc_nx_u
-        case (2)
-            ny = cpu(myid) % loc_ny_v
-        end select
-
-        allocate(local(nx, ny, nz, 0:nmember-1))
+        dims = shape(local)
+        nx   = dims(1)
+        ny   = dims(2)
+        nz   = dims(3)
 
         sdispls  = 0
         rdispls  = 0
@@ -241,16 +229,16 @@ contains
             do i = 0, nproc-1
                 loc_nx = cpu(i) % loc_nx
                 loc_ny = cpu(i) % loc_ny
-                if(igrid == 1) loc_nx = cpu(i) % loc_nx_u
-                if(igrid == 2) loc_ny = cpu(i) % loc_ny_v
+                if(stagger == 1) loc_nx = cpu(i) % loc_nx_u
+                if(stagger == 2) loc_ny = cpu(i) % loc_ny_v
 
-                if(igrid == 1) then
+                if(stagger == 1) then
                     idxx => cpu(i) % xloc_u
                 else
                     idxx => cpu(i) % xloc
                 end if
 
-                if(igrid == 2) then
+                if(stagger == 2) then
                     idxy => cpu(i) % yloc_v
                 else
                     idxy => cpu(i) % yloc
@@ -278,19 +266,18 @@ contains
 
     end subroutine letkf_scatter_grid
 
-    subroutine letkf_gather_grid(local, global, iuv)
+    subroutine letkf_gather_grid(local, global, stagger)
 
         implicit none
 
-        real, dimension(:,:,:,:), allocatable, intent(in out) :: local
-        real, dimension(:,:,:),                intent(   out) :: global
-        integer,                  optional,    intent(in)     :: iuv
+        real, dimension(:,:,:,:), intent(in)    :: local
+        real, dimension(:,:,:),   intent(inout) :: global
+        integer,                  intent(in)    :: stagger
 
         !local
         integer                               :: i, nx, ny, nz
         integer                               :: loc_nx, loc_ny
         integer                               :: st, ed
-        integer                               :: igrid
         integer, dimension(4)                 :: dims
         integer, dimension(:), pointer        :: idxx => null()
         integer, dimension(:), pointer        :: idxy => null()
@@ -301,9 +288,6 @@ contains
         integer, dimension(0:nproc-1)         :: sendcnts, sdispls
         integer, dimension(0:nproc-1)         :: recvcnts, rdispls
 
-        !Initialization
-        igrid = 0
-        if(present(iuv)) igrid = iuv
 
         !determine shape of local array
         dims = shape(local)
@@ -326,8 +310,8 @@ contains
             do i = 0, nproc-1
                 loc_nx = cpu(i) % loc_nx
                 loc_ny = cpu(i) % loc_ny
-                if(igrid == 1) loc_nx = cpu(i) % loc_nx_u
-                if(igrid == 2) loc_ny = cpu(i) % loc_ny_v
+                if(stagger == 1) loc_nx = cpu(i) % loc_nx_u
+                if(stagger == 2) loc_ny = cpu(i) % loc_ny_v
 
                 if(i == 0) then
                     rdispls(i) = 0
@@ -346,16 +330,16 @@ contains
             do i = 0, nproc-1
                 loc_nx = cpu(i) % loc_nx
                 loc_ny = cpu(i) % loc_ny
-                if(igrid == 1) loc_nx = cpu(i) % loc_nx_u
-                if(igrid == 2) loc_ny = cpu(i) % loc_ny_v
+                if(stagger == 1) loc_nx = cpu(i) % loc_nx_u
+                if(stagger == 2) loc_ny = cpu(i) % loc_ny_v
 
-                if(igrid == 1) then
+                if(stagger == 1) then
                     idxx => cpu(i) % xloc_u
                 else
                     idxx => cpu(i) % xloc
                 end if
 
-                if(igrid == 2) then
+                if(stagger == 2) then
                     idxy => cpu(i) % yloc_v
                 else
                     idxy => cpu(i) % yloc
@@ -370,26 +354,24 @@ contains
 
             deallocate(tmp)
         end if
-
-        deallocate(local)
  
     end subroutine letkf_gather_grid
 
     subroutine letkf_scatter_hcoord(global_lat, local_lat, &
-                                    global_lon, local_lon, iuv)
+                                    global_lon, local_lon, stagger)
 
         implicit none
 
-        real, dimension(:,:),              intent(in)     :: global_lat, global_lon
-        real, dimension(:,:), allocatable, intent(in out) ::  local_lat,  local_lon
-        integer,                 optional, intent(in)     :: iuv
-        integer                                           :: isave = -1
-
+        real, dimension(:,:), intent(in)      :: global_lat, global_lon
+        real, dimension(:,:), intent(out)     ::  local_lat,  local_lon
+        integer,              intent(in)      :: stagger  !0: no   stagger
+                                                          !1: u    stagger
+                                                          !2: v    stagger
         !local
         integer                               :: i, nx, ny
         integer                               :: loc_nx, loc_ny
         integer                               :: st, ed
-        integer                               :: igrid
+        integer, dimension(2)                 :: dims
         integer, dimension(:), pointer        :: idxx => null()
         integer, dimension(:), pointer        :: idxy => null()
         real,    dimension(:), allocatable    :: tmp_lat, tmp_lon
@@ -399,31 +381,11 @@ contains
         integer, dimension(0:nproc-1)         :: sendcnts, sdispls
         integer                               :: recvcnts
 
-        !Initialization
-        igrid = 0
-        if(present(iuv)) igrid = iuv
-
-        !Check if this is the same geophysical info as previous
-        !yes return immediately to save time
-        if(isave == igrid) then
-            return
-        else
-            isave = igrid
-            if(allocated(local_lat)) deallocate(local_lat, local_lon)
-        end if
 
         !determine shape of local array
-        nx = cpu(myid) % loc_nx
-        ny = cpu(myid) % loc_ny
-
-        select case (igrid)
-        case (1)
-            nx = cpu(myid) % loc_nx_u
-        case (2)
-            ny = cpu(myid) % loc_ny_v
-        end select
-
-        allocate(local_lat(nx, ny), local_lon(nx, ny))
+        dims = shape(local_lat)
+        nx   = dims(1)
+        ny   = dims(2)
 
         sdispls  = 0
         sendcnts = 0
@@ -438,16 +400,16 @@ contains
             do i = 0, nproc-1
                 loc_nx = cpu(i) % loc_nx
                 loc_ny = cpu(i) % loc_ny
-                if(igrid == 1) loc_nx = cpu(i) % loc_nx_u
-                if(igrid == 2) loc_ny = cpu(i) % loc_ny_v
+                if(stagger == 1) loc_nx = cpu(i) % loc_nx_u
+                if(stagger == 2) loc_ny = cpu(i) % loc_ny_v
 
-                if(igrid == 1) then
+                if(stagger == 1) then
                     idxx => cpu(i) % xloc_u
                 else
                     idxx => cpu(i) % xloc
                 end if
 
-                if(igrid == 2) then
+                if(stagger == 2) then
                     idxy => cpu(i) % yloc_v
                 else
                     idxy => cpu(i) % yloc
@@ -479,22 +441,21 @@ contains
 
     end subroutine letkf_scatter_hcoord
 
-    subroutine letkf_scatter_vcoord(global, nz, local, iw)
+
+    subroutine letkf_scatter_vcoord(global, local, stagger)
 
         use param, only : g
         implicit none
 
-        real, dimension(:,:,:),              intent(in)     :: global
-        real, dimension(:,:,:), allocatable, intent(in out) :: local
-        integer,                             intent(in)     :: nz
-        integer,                   optional, intent(in)     :: iw
-        integer                                             :: isave = -1
-
+        real, dimension(:,:,:), intent(in)       :: global
+        real, dimension(:,:,:), intent(out)      :: local
+        integer,                intent(in)       :: stagger  !0: no   stagger
+                                                             !1: w/ph stagger
         !local
-        integer                                  :: i, nx, ny, nz_ph
+        integer                                  :: i, nx, ny, nz, nz_ph
         integer                                  :: loc_nx, loc_ny
+        integer, dimension(3)                    :: dims
         integer                                  :: st, ed
-        integer                                  :: igrid
         integer, dimension(:),       pointer     :: idxx => null()
         integer, dimension(:),       pointer     :: idxy => null()
         real,    dimension(:),       allocatable :: tmp
@@ -507,89 +468,114 @@ contains
         integer, dimension(0:nproc-1)         :: sendcnts, sdispls
         integer, dimension(0:nproc-1)         :: recvcnts, rdispls
 
-        !Initialization
-        igrid = 0
-        if(present(iw)) igrid = iw
-
-        !Check if this is the same geophysical info as previous
-        !yes return immediately to save time
-        if(isave == igrid) then
-            return
-        else
-            isave = igrid
-            if(allocated(local)) deallocate(local)
-        end if
-
-
 
         !determine shape of local array
-        nx = cpu(myid) % loc_nx
-        ny = cpu(myid) % loc_ny
+        dims = shape(local)
+        nx = dims(1)
+        ny = dims(2)
+        nz = dims(3)
 
-        select case (igrid)
-        case (1)
+        select case (stagger)
+        case (-1, 1)
             nz_ph = nz
         case default
             nz_ph = nz + 1
         end select
 
-        allocate(local(nx, ny, nz), &
-                 tmp3d(nx, ny, nz_ph),      &
-                 tmp4d(nx, ny, nz_ph, 0:nmember-1))
+        if(stagger /= -1) then
+            allocate(tmp3d(nx, ny, nz_ph), &
+                     tmp4d(nx, ny, nz_ph, 0:nmember-1))
 
-        sdispls  = 0
-        rdispls  = 0
-        sendcnts = 0
-        recvcnts = 0
+            sdispls  = 0
+            rdispls  = 0
+            sendcnts = 0
+            recvcnts = 0
 
-        rdispls (0:nmember-1) = [ (i, i = 0, nmember-1) ] * nx * ny * nz_ph 
-        recvcnts(0:nmember-1) = nx * ny * nz_ph
-        !==============================================================
+            rdispls (0:nmember-1) = [ (i, i = 0, nmember-1) ] * nx * ny * nz_ph 
+            recvcnts(0:nmember-1) = nx * ny * nz_ph
+            !==============================================================
 
-        if(myid < nmember) then
-            allocate(tmp(size(global)))
+            if(myid < nmember) then
+                allocate(tmp(size(global)))
 
-            do i = 0, nproc-1
-                loc_nx = cpu(i) % loc_nx
-                loc_ny = cpu(i) % loc_ny
+                do i = 0, nproc-1
+                    loc_nx = cpu(i) % loc_nx
+                    loc_ny = cpu(i) % loc_ny
 
-                idxx => cpu(i) % xloc
-                idxy => cpu(i) % yloc
+                    idxx => cpu(i) % xloc
+                    idxy => cpu(i) % yloc
 
-                if(i == 0) then
-                    sdispls(i) = 0
-                else
-                    sdispls(i) = sdispls(i-1) + sendcnts(i-1)
-                end if
-                sendcnts(i) = loc_nx * loc_ny * nz_ph
+                    if(i == 0) then
+                        sdispls(i) = 0
+                    else
+                        sdispls(i) = sdispls(i-1) + sendcnts(i-1)
+                    end if
+                    sendcnts(i) = loc_nx * loc_ny * nz_ph
 
-                st = sdispls(i)+1
-                ed = sdispls(i)+sendcnts(i)
-                tmp(st:ed) = reshape(global(idxx,idxy,:), [sendcnts(i)])
+                    st = sdispls(i)+1
+                    ed = sdispls(i)+sendcnts(i)
+                    tmp(st:ed) = reshape(global(idxx,idxy,:), [sendcnts(i)])
 
-                nullify(idxx, idxy)
-            end do
+                    nullify(idxx, idxy)
+                end do
+            end if
+
+            call mpi_alltoallv(  tmp, sendcnts, sdispls, mpi_real, &
+                               tmp4d, recvcnts, rdispls, mpi_real, &
+                               mpi_comm_world, mpierr)
+            if(allocated(tmp)) deallocate(tmp)
+
+            !do ensemble mean of tmp4d and convert unit from m^2/s^2 to m
+            x = 1.0
+            call sgemv('n', nx*ny*nz_ph, nmember, 1.0/(g*nmember), tmp4d, nx*ny*nz_ph, x, 1, 0.0, tmp3d, 1)
+
+            deallocate(tmp4d)
+
+            select case (stagger)
+            case(1)
+                local = tmp3d
+            case default
+                local = (tmp3d(:,:,2:nz_ph)+tmp3d(:,:,1:nz)) * 0.5
+            end select
+
+            deallocate(tmp3d)
+        else
+            sdispls  = 0
+            sendcnts = 0
+
+            !==============================================================
+
+            if(is_root) then
+                allocate(tmp(size(global)))
+
+                do i = 0, nproc-1
+                    loc_nx = cpu(i) % loc_nx
+                    loc_ny = cpu(i) % loc_ny
+
+                    idxx => cpu(i) % xloc
+                    idxy => cpu(i) % yloc
+
+                    if(i == 0) then
+                        sdispls(i) = 0
+                    else
+                        sdispls(i) = sdispls(i-1) + sendcnts(i-1)
+                    end if
+                    sendcnts(i) = loc_nx * loc_ny
+
+                    st = sdispls(i)+1
+                    ed = sdispls(i)+sendcnts(i)
+                    tmp(st:ed) = reshape(global(idxx,idxy,1), [sendcnts(i)])
+
+                    nullify(idxx, idxy)
+                end do
+            end if
+
+            call mpi_scatterv(   tmp, sendcnts, sdispls, mpi_real, &
+                               local,    nx*ny,          mpi_real, &
+                               0, mpi_comm_world, mpierr)
+
+            if(is_root) deallocate(tmp)
         end if
-
-        call mpi_alltoallv(  tmp, sendcnts, sdispls, mpi_real, &
-                           tmp4d, recvcnts, rdispls, mpi_real, &
-                           mpi_comm_world, mpierr)
-        if(allocated(tmp)) deallocate(tmp)
-
-        !do ensemble mean of tmp4d and convert unit from m^2/s^2 to m
-        x = 1.0
-        call sgemv('n', nx*ny*nz_ph, nmember, 1.0/(g*nmember), tmp4d, nx*ny*nz_ph, x, 1, 0.0, tmp3d, 1)
-
-        deallocate(tmp4d)
-
-        select case (igrid)
-        case(1)
-            local = tmp3d
-        case default
-            local = (tmp3d(:,:,2:nz_ph)+tmp3d(:,:,1:nz)) * 0.5
-        end select
-
-        deallocate(tmp3d)
 
     end subroutine letkf_scatter_vcoord
 

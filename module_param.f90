@@ -2,8 +2,9 @@ module param
     implicit none
 
     type, abstract :: obs_structure
-        integer                          :: nobs = 0
-        real, dimension(:), allocatable  :: lat, lon, alt
+        integer                           :: nobs = 0
+        real, dimension(:),   allocatable :: lat, lon, alt
+        real, dimension(:,:), allocatable :: xyz          ![   3, nobs]
     end type obs_structure
 
 !--------------------------------------------------------------
@@ -98,8 +99,6 @@ module param
     character(len=3), parameter :: radar_names(num_radar_indexes) = &
         (/ "MR ", "VR ", "ZDR", "KDP" /)
 
-    integer, parameter  :: max_lz_pts = 100
-
 !-----------------------------------------------------------------
 ! Constants
 !-----------------------------------------------------------------
@@ -114,6 +113,7 @@ module param
     real,    parameter :: cp      = 7.*r_d*0.5
     real,    parameter :: cv      = cp-r_d
     real,    parameter :: cvpm    = -cv/cp
+    real,    parameter :: gc1999  = 2. * sqrt(10./3.)   !Gaspari and Cohn 1999 
 
 !-----------------------------------------------------------------
 ! Computation

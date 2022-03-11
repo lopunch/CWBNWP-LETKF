@@ -1,6 +1,7 @@
 module gts_omboma
 
-    use config, only : nmember
+    use projection, only : proj_type
+    use config,     only : nmember
     use param
     use mpi_util
 
@@ -44,9 +45,10 @@ module gts_omboma
  
 contains
 
-    subroutine read_gts_omboma(self, filename, obascii)
+    subroutine read_gts_omboma(self, proj, filename, obascii)
         implicit none
         class(wrfda_gts), intent(in out) :: self
+        type(proj_type),  intent(in)     :: proj
         character(len=*), intent(in)     :: filename, obascii
 
         !local
@@ -64,7 +66,7 @@ contains
         type(vert_structure), dimension(:), allocatable   :: vert
         type(alt_structure),  dimension(num_gts_indexes)  :: gtsalt
 
-        integer                                           :: ierr
+        integer                                           :: ierr, iproc
         integer                                           :: nobs, nlev, obs_type
         character(len=20)                                 :: iv_type, obs_name
 
@@ -76,10 +78,17 @@ contains
         !read altitude info
         call read_alt_info(gtsalt, obascii)
 
+        !read file id
+        l = len(filename)
+        read(filename(l-2:l), '(i3)') iproc
+        iproc = iproc - 1 
+
+        !=======================================================================
+
         open(30, file=filename, iostat=ierr)
         if(ierr /= 0) stop "open gts_omboma error"
 
-        if(write_gts) open(40, file='gts_out_'//filename(20:22), iostat=ierr)
+        if(write_gts) open(40, file='gts_out_'//filename(l-2:l), iostat=ierr)
         report: do
             read(30, '(a20,i8)', iostat=ierr) iv_type, nobs
             if(ierr < 0) exit
@@ -113,6 +122,7 @@ contains
                                  platform % lon  (nobs), &
                                  platform % alt  (nobs), &
                                  platform % pre  (nobs), &
+                                 platform % xyz  (3,nobs),         &
                                  platform % obs  (5,nobs),         &
                                  platform % error(5,nobs),         &
                                  platform % hdxb (5,nobs,0:nmember-1),         &
@@ -123,39 +133,42 @@ contains
                             if(write_gts) write(40, '(2i8)') nlev, nreq
 
                             read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
-                                platform % id (n),     platform % lat(n),  &
-                                platform % lon(n),     platform % pre(n),  &
-                                platform % obs(1,n),   platform % hdxb (1,n,0),       &
-                                platform % qc (1,n,0), platform % error(1,n), oma(1),         &
-                                platform % obs(2,n),   platform % hdxb (2,n,0),       &
-                                platform % qc (2,n,0), platform % error(2,n), oma(2),         &
-                                platform % obs(3,n),   platform % hdxb (3,n,0),       &
-                                platform % qc (3,n,0), platform % error(3,n), oma(3),         &
-                                platform % obs(4,n),   platform % hdxb (4,n,0),       &
-                                platform % qc (4,n,0), platform % error(4,n), oma(4),         &
-                                platform % obs(5,n),   platform % hdxb (5,n,0),       &
-                                platform % qc (5,n,0), platform % error(5,n), oma(5)
+                                platform % id (n),         platform % lat(n),  &
+                                platform % lon(n),         platform % pre(n),  &
+                                platform % obs(1,n),       platform % hdxb (1,n,iproc),       &
+                                platform % qc (1,n,iproc), platform % error(1,n), oma(1),         &
+                                platform % obs(2,n),       platform % hdxb (2,n,iproc),       &
+                                platform % qc (2,n,iproc), platform % error(2,n), oma(2),         &
+                                platform % obs(3,n),       platform % hdxb (3,n,iproc),       &
+                                platform % qc (3,n,iproc), platform % error(3,n), oma(3),         &
+                                platform % obs(4,n),       platform % hdxb (4,n,iproc),       &
+                                platform % qc (4,n,iproc), platform % error(4,n), oma(4),         &
+                                platform % obs(5,n),       platform % hdxb (5,n,iproc),       &
+                                platform % qc (5,n,iproc), platform % error(5,n), oma(5)
 
-                            platform % alt(n) = get_alt(gtsalt(obs_type), platform % id(n), 1)
+                            platform % alt(n)     = get_alt(gtsalt(obs_type), platform % id(n), 1)
+                            platform % xyz(3,n)   = platform % alt(n)
+                            platform % xyz(1:2,n) = proj % lonlat_to_xy(platform % lon(n), &
+                                                                        platform % lat(n))
 
                             if(write_gts) &
                                 write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
-                                    platform % id (n),     platform % lat(n),  &
-                                    platform % lon(n),     platform % pre(n),  &
-                                    platform % obs(1,n),   platform % hdxb (1,n,0),       &
-                                    platform % qc (1,n,0), platform % error(1,n), oma(1),         &
-                                    platform % obs(2,n),   platform % hdxb (2,n,0),       &
-                                    platform % qc (2,n,0), platform % error(2,n), oma(2),         &
-                                    platform % obs(3,n),   platform % hdxb (3,n,0),       &
-                                    platform % qc (3,n,0), platform % error(3,n), oma(3),         &
-                                    platform % obs(4,n),   platform % hdxb (4,n,0),       &
-                                    platform % qc (4,n,0), platform % error(4,n), oma(4),         &
-                                    platform % obs(5,n),   platform % hdxb (5,n,0),       &
-                                    platform % qc (5,n,0), platform % error(5,n), oma(5)
+                                    platform % id (n),         platform % lat(n),  &
+                                    platform % lon(n),         platform % pre(n),  &
+                                    platform % obs(1,n),       platform % hdxb (1,n,iproc),       &
+                                    platform % qc (1,n,iproc), platform % error(1,n), oma(1),         &
+                                    platform % obs(2,n),       platform % hdxb (2,n,iproc),       &
+                                    platform % qc (2,n,iproc), platform % error(2,n), oma(2),         &
+                                    platform % obs(3,n),       platform % hdxb (3,n,iproc),       &
+                                    platform % qc (3,n,iproc), platform % error(3,n), oma(3),         &
+                                    platform % obs(4,n),       platform % hdxb (4,n,iproc),       &
+                                    platform % qc (4,n,iproc), platform % error(4,n), oma(4),         &
+                                    platform % obs(5,n),       platform % hdxb (5,n,iproc),       &
+                                    platform % qc (5,n,iproc), platform % error(5,n), oma(5)
                         end do  !nobs
 
                         !hdxb = obs - omb
-                        platform % hdxb(:,:,0) = platform % obs - platform % hdxb(:,:,0)
+                        platform % hdxb(:,:,iproc) = platform % obs - platform % hdxb(:,:,iproc)
                     end associate
                 end if
             case ('pilot', 'profiler', 'geoamv', 'qscat', 'polaramv')    
@@ -195,29 +208,28 @@ contains
                             total = total + 1
 
                             read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
-                                vert(n) % id,         vert(n) % lat(k),    &
-                                vert(n) % lon(k),     vert(n) % pre(k),    &
-                                vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),       &
-                                vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1),                  &
-                                vert(n) % obs(2,k),   vert(n) % hdxb (2,k,0),       &
-                                vert(n) % qc (2,k,0), vert(n) % error(2,k), oma(2)
+                                vert(n) % id,             vert(n) % lat(k),    &
+                                vert(n) % lon(k),         vert(n) % pre(k),    &
+                                vert(n) % obs(1,k),       vert(n) % hdxb (1,k,iproc),       &
+                                vert(n) % qc (1,k,iproc), vert(n) % error(1,k), oma(1),                  &
+                                vert(n) % obs(2,k),       vert(n) % hdxb (2,k,iproc),       &
+                                vert(n) % qc (2,k,iproc), vert(n) % error(2,k), oma(2)
 
                             vert(n) % alt(k) = get_alt(gtsalt(obs_type), vert(n) % id, k)
-                           !if(k == 1) platform(obs_type)%xy(:,n) = latlon_to_dist( [lat, lon] )
 
                             if(write_gts)  &
                                 write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
-                                    vert(n) % id,         vert(n) % lat(k),    &
-                                    vert(n) % lon(k),     vert(n) % pre(k),    &
-                                    vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),       &
-                                    vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1),                  &
-                                    vert(n) % obs(2,k),   vert(n) % hdxb (2,k,0),       &
-                                    vert(n) % qc (2,k,0), vert(n) % error(2,k), oma(2)
+                                    vert(n) % id,             vert(n) % lat(k),    &
+                                    vert(n) % lon(k),         vert(n) % pre(k),    &
+                                    vert(n) % obs(1,k),       vert(n) % hdxb (1,k,iproc),       &
+                                    vert(n) % qc (1,k,iproc), vert(n) % error(1,k), oma(1),                  &
+                                    vert(n) % obs(2,k),       vert(n) % hdxb (2,k,iproc),       &
+                                    vert(n) % qc (2,k,iproc), vert(n) % error(2,k), oma(2)
 
                         end do   !nlev
 
                         !hdxb = obs - omb
-                        vert(n) % hdxb(:,:,0) = vert(n) % obs - vert(n) % hdxb(:,:,0)
+                        vert(n) % hdxb(:,:,iproc) = vert(n) % obs - vert(n) % hdxb(:,:,iproc)
                     end do  !nobs
 
                     !=======================================================================
@@ -230,6 +242,7 @@ contains
                                  platform % lon  (total), &
                                  platform % alt  (total), &
                                  platform % pre  (total), &
+                                 platform % xyz  (3,total),         &
                                  platform % obs  (2,total),         &
                                  platform % error(2,total),         &
                                  platform % hdxb (2,total,0:nmember-1),         &
@@ -240,15 +253,18 @@ contains
                         do n = 1, nobs 
                         do k = 1, vert(n) % nobs
                             total = total + 1
-                            platform % id   (total)     = vert(n) % id
-                            platform % lat  (total)     = vert(n) % lat(k)
-                            platform % lon  (total)     = vert(n) % lon(k)
-                            platform % alt  (total)     = vert(n) % alt(k)
-                            platform % pre  (total)     = vert(n) % pre(k)
-                            platform % obs  (:,total)   = vert(n) % obs  (:,k)
-                            platform % error(:,total)   = vert(n) % error(:,k)
-                            platform % hdxb (:,total,0) = vert(n) % hdxb (:,k,0)
-                            platform % qc   (:,total,0) = vert(n) % qc   (:,k,0)
+                            platform % id   (total)         = vert(n) % id
+                            platform % lat  (total)         = vert(n) % lat(k)
+                            platform % lon  (total)         = vert(n) % lon(k)
+                            platform % alt  (total)         = vert(n) % alt(k)
+                            platform % pre  (total)         = vert(n) % pre(k)
+                            platform % obs  (:,total)       = vert(n) % obs  (:,k)
+                            platform % error(:,total)       = vert(n) % error(:,k)
+                            platform % hdxb (:,total,iproc) = vert(n) % hdxb (:,k,iproc)
+                            platform % qc   (:,total,iproc) = vert(n) % qc   (:,k,iproc)
+                            platform % xyz  (3,total)       = vert(n) % alt(k)
+                            platform % xyz  (1:2,total)     = proj % lonlat_to_xy(vert(n) % lon(k), &
+                                                                                  vert(n) % lat(k))
                         end do
                         end do
                     end associate
@@ -266,6 +282,7 @@ contains
                                  platform % lat(nobs), &
                                  platform % lon(nobs), &
                                  platform % alt(nobs), &
+                                 platform % xyz  (3,nobs), &
                                  platform % obs  (1,nobs), &
                                  platform % error(1,nobs), &
                                  platform % hdxb (1,nobs,0:nmember-1), &
@@ -276,24 +293,26 @@ contains
                             if(write_gts) write(40,'(2i8)') nlev, nreq
 
                             read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
-                                platform % id (n),     platform % lat(n),  &
-                                platform % lon(n),     platform % alt(n),  &
-                                platform % obs(1,n),   platform % hdxb (1,n,0),     &
-                                platform % qc (1,n,0), platform % error(1,n), oma(1)
+                                platform % id (n),         platform % lat(n),  &
+                                platform % lon(n),         platform % alt(n),  &
+                                platform % obs(1,n),       platform % hdxb (1,n,iproc),     &
+                                platform % qc (1,n,iproc), platform % error(1,n), oma(1)
 
-                           !platform(obs_type)%xy(:,n) = latlon_to_dist( [lat, lon] )
+                            platform % xyz(3,n)   = platform % alt(n)
+                            platform % xyz(1:2,n) = proj % lonlat_to_xy(platform % lon(n), &
+                                                                        platform % lat(n))
 
                             if(write_gts) &
                                 write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
-                                    platform % id (n),     platform % lat(n),  &
-                                    platform % lon(n),     platform % alt(n),  &
-                                    platform % obs(1,n),   platform % hdxb (1,n,0),     &
-                                    platform % qc (1,n,0), platform % error(1,n), oma(1)
+                                    platform % id (n),         platform % lat(n),  &
+                                    platform % lon(n),         platform % alt(n),  &
+                                    platform % obs(1,n),       platform % hdxb (1,n,iproc),     &
+                                    platform % qc (1,n,iproc), platform % error(1,n), oma(1)
 
                         end do  !nobs
 
                         !hdxb = obs - omb
-                        platform % hdxb(:,:,0) = platform % obs - platform % hdxb(:,:,0)
+                        platform % hdxb(:,:,iproc) = platform % obs - platform % hdxb(:,:,iproc)
                     end associate
                 end if
             case ('sound', 'tamdar', 'airep')
@@ -328,36 +347,35 @@ contains
                         do k = 1, nlev
                             total = total + 1
                             read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
-                                vert(n) % id,         vert(n) % lat(k),    &
-                                vert(n) % lon(k),     vert(n) % pre(k),    &
-                                vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),       &
-                                vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1),                  &
-                                vert(n) % obs(2,k),   vert(n) % hdxb (2,k,0),       &
-                                vert(n) % qc (2,k,0), vert(n) % error(2,k), oma(2),                  &
-                                vert(n) % obs(3,k),   vert(n) % hdxb (3,k,0),       &
-                                vert(n) % qc (3,k,0), vert(n) % error(3,k), oma(3),                  &
-                                vert(n) % obs(4,k),   vert(n) % hdxb (4,k,0),       &
-                                vert(n) % qc (4,k,0), vert(n) % error(4,k), oma(4)
+                                vert(n) % id,             vert(n) % lat(k),    &
+                                vert(n) % lon(k),         vert(n) % pre(k),    &
+                                vert(n) % obs(1,k),       vert(n) % hdxb (1,k,iproc),       &
+                                vert(n) % qc (1,k,iproc), vert(n) % error(1,k), oma(1),                  &
+                                vert(n) % obs(2,k),       vert(n) % hdxb (2,k,iproc),       &
+                                vert(n) % qc (2,k,iproc), vert(n) % error(2,k), oma(2),                  &
+                                vert(n) % obs(3,k),       vert(n) % hdxb (3,k,iproc),       &
+                                vert(n) % qc (3,k,iproc), vert(n) % error(3,k), oma(3),                  &
+                                vert(n) % obs(4,k),       vert(n) % hdxb (4,k,iproc),       &
+                                vert(n) % qc (4,k,iproc), vert(n) % error(4,k), oma(4)
 
                             vert(n) % alt(k) = get_alt(gtsalt(obs_type), vert(n) % id, k)
-                           !if(k == 1) platform(obs_type)%xy(:,n) = latlon_to_dist( [lat, lon] )
 
                             if(write_gts) &
                                 write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
-                                    vert(n) % id,         vert(n) % lat(k),    &
-                                    vert(n) % lon(k),     vert(n) % pre(k),    &
-                                    vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),       &
-                                    vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1),                  &
-                                    vert(n) % obs(2,k),   vert(n) % hdxb (2,k,0),       &
-                                    vert(n) % qc (2,k,0), vert(n) % error(2,k), oma(2),                  &
-                                    vert(n) % obs(3,k),   vert(n) % hdxb (3,k,0),       &
-                                    vert(n) % qc (3,k,0), vert(n) % error(3,k), oma(3),                  &
-                                    vert(n) % obs(4,k),   vert(n) % hdxb (4,k,0),       &
-                                    vert(n) % qc (4,k,0), vert(n) % error(4,k), oma(4)
+                                    vert(n) % id,             vert(n) % lat(k),    &
+                                    vert(n) % lon(k),         vert(n) % pre(k),    &
+                                    vert(n) % obs(1,k),       vert(n) % hdxb (1,k,iproc),       &
+                                    vert(n) % qc (1,k,iproc), vert(n) % error(1,k), oma(1),                  &
+                                    vert(n) % obs(2,k),       vert(n) % hdxb (2,k,iproc),       &
+                                    vert(n) % qc (2,k,iproc), vert(n) % error(2,k), oma(2),                  &
+                                    vert(n) % obs(3,k),       vert(n) % hdxb (3,k,iproc),       &
+                                    vert(n) % qc (3,k,iproc), vert(n) % error(3,k), oma(3),                  &
+                                    vert(n) % obs(4,k),       vert(n) % hdxb (4,k,iproc),       &
+                                    vert(n) % qc (4,k,iproc), vert(n) % error(4,k), oma(4)
                         end do   !nlev
 
                         !hdxb = obs - omb
-                        vert(n) % hdxb(:,:,0) = vert(n) % obs - vert(n) % hdxb(:,:,0)
+                        vert(n) % hdxb(:,:,iproc) = vert(n) % obs - vert(n) % hdxb(:,:,iproc)
                     end do  !nobs
 
                     !=======================================================================
@@ -370,6 +388,7 @@ contains
                                  platform % lon  (total), &
                                  platform % alt  (total), &
                                  platform % pre  (total), &
+                                 platform % xyz  (3,total),         &
                                  platform % obs  (4,total),         &
                                  platform % error(4,total),         &
                                  platform % hdxb (4,total,0:nmember-1),         &
@@ -380,15 +399,18 @@ contains
                         do n = 1, nobs 
                         do k = 1, vert(n) % nobs
                             total = total + 1
-                            platform % id   (total)     = vert(n) % id
-                            platform % lat  (total)     = vert(n) % lat(k)
-                            platform % lon  (total)     = vert(n) % lon(k)
-                            platform % alt  (total)     = vert(n) % alt(k)
-                            platform % pre  (total)     = vert(n) % pre(k)
-                            platform % obs  (:,total)   = vert(n) % obs  (:,k)
-                            platform % error(:,total)   = vert(n) % error(:,k)
-                            platform % hdxb (:,total,0) = vert(n) % hdxb (:,k,0)
-                            platform % qc   (:,total,0) = vert(n) % qc   (:,k,0)
+                            platform % id   (total)         = vert(n) % id
+                            platform % lat  (total)         = vert(n) % lat(k)
+                            platform % lon  (total)         = vert(n) % lon(k)
+                            platform % alt  (total)         = vert(n) % alt(k)
+                            platform % pre  (total)         = vert(n) % pre(k)
+                            platform % obs  (:,total)       = vert(n) % obs  (:,k)
+                            platform % error(:,total)       = vert(n) % error(:,k)
+                            platform % hdxb (:,total,iproc) = vert(n) % hdxb (:,k,iproc)
+                            platform % qc   (:,total,iproc) = vert(n) % qc   (:,k,iproc)
+                            platform % xyz  (3,total)       = vert(n) % alt(k)
+                            platform % xyz  (1:2,total)     = proj % lonlat_to_xy(vert(n) % lon(k), &
+                                                                                  vert(n) % lat(k))
                         end do
                         end do
 
@@ -421,23 +443,21 @@ contains
                         do k = 1, nlev
                             total = total + 1
                             read(30,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
-                                vert(n) % id,         vert(n) % lat(k),    &
-                                vert(n) % lon(k),     vert(n) % alt(k),    &
-                                vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),     &
-                                vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1)
-
-                           !platform(obs_type)%xy(:,n) = latlon_to_dist( [lat, lon] )
+                                vert(n) % id,             vert(n) % lat(k),    &
+                                vert(n) % lon(k),         vert(n) % alt(k),    &
+                                vert(n) % obs(1,k),       vert(n) % hdxb (1,k,iproc),     &
+                                vert(n) % qc (1,k,iproc), vert(n) % error(1,k), oma(1)
 
                             if(write_gts) &
                                 write(40,'(2i8,a5,2f9.2,f17.7,5(2f17.7,i8,2f17.7))', iostat=ierr) kk, l, &
-                                    vert(n) % id,         vert(n) % lat(k),    &
-                                    vert(n) % lon(k),     vert(n) % alt(k),    &
-                                    vert(n) % obs(1,k),   vert(n) % hdxb (1,k,0),     &
-                                    vert(n) % qc (1,k,0), vert(n) % error(1,k), oma(1)
+                                    vert(n) % id,             vert(n) % lat(k),    &
+                                    vert(n) % lon(k),         vert(n) % alt(k),    &
+                                    vert(n) % obs(1,k),       vert(n) % hdxb (1,k,iproc),     &
+                                    vert(n) % qc (1,k,iproc), vert(n) % error(1,k), oma(1)
                         end do
 
                         !hdxb = obs - omb
-                        vert(n) % hdxb(:,:,0) = vert(n) % obs - vert(n) % hdxb(:,:,0)
+                        vert(n) % hdxb(:,:,iproc) = vert(n) % obs - vert(n) % hdxb(:,:,iproc)
                     end do  !nobs
 
                     !=======================================================================
@@ -449,6 +469,7 @@ contains
                                  platform % lat  (total), &
                                  platform % lon  (total), &
                                  platform % alt  (total), &
+                                 platform % xyz  (3,total),         &
                                  platform % obs  (1,total),         &
                                  platform % error(1,total),         &
                                  platform % hdxb (1,total,0:nmember-1),         &
@@ -459,14 +480,17 @@ contains
                         do n = 1, nobs 
                         do k = 1, vert(n) % nobs
                             total = total + 1
-                            platform % id   (total)     = vert(n) % id
-                            platform % lat  (total)     = vert(n) % lat(k)
-                            platform % lon  (total)     = vert(n) % lon(k)
-                            platform % alt  (total)     = vert(n) % alt(k)
-                            platform % obs  (:,total)   = vert(n) % obs  (:,k)
-                            platform % error(:,total)   = vert(n) % error(:,k)
-                            platform % hdxb (:,total,0) = vert(n) % hdxb (:,k,0)
-                            platform % qc   (:,total,0) = vert(n) % qc   (:,k,0)
+                            platform % id   (total)         = vert(n) % id
+                            platform % lat  (total)         = vert(n) % lat(k)
+                            platform % lon  (total)         = vert(n) % lon(k)
+                            platform % alt  (total)         = vert(n) % alt(k)
+                            platform % obs  (:,total)       = vert(n) % obs  (:,k)
+                            platform % error(:,total)       = vert(n) % error(:,k)
+                            platform % hdxb (:,total,iproc) = vert(n) % hdxb (:,k,iproc)
+                            platform % qc   (:,total,iproc) = vert(n) % qc   (:,k,iproc)
+                            platform % xyz  (3,total)       = vert(n) % alt(k)
+                            platform % xyz  (1:2,total)     = proj % lonlat_to_xy(vert(n) % lon(k), &
+                                                                                  vert(n) % lat(k))
                         end do
                         end do
                     end associate
@@ -493,11 +517,9 @@ contains
 
         !local mpi 
         integer,  dimension(0:nproc-1)                 :: recvcount, displs
-        integer                                        :: mpierr, sendcount
+        integer                                        :: mpierr
         integer,  dimension(:),     allocatable        :: i4_nobs
 
-        real,     dimension(:,:),   allocatable        :: local_hdxb
-        integer,  dimension(:,:),   allocatable        :: local_qc
 
         !broadcast number of obs of each obs type
         allocate(i4_nobs(num_gts_indexes))
@@ -520,17 +542,20 @@ contains
                         allocate(platform % id (nobs), &
                                  platform % lat(nobs), &
                                  platform % lon(nobs), &
-                                 platform % alt(nobs))
+                                 platform % alt(nobs), &
+                                 platform % xyz(3,nobs))
                     end if
 
                     call request_append
-                    call mpi_ibcast(platform % id, 5*nobs, mpi_character, root, mpi_comm_world, req_ptr%req, mpierr)
+                    call mpi_ibcast(platform % id,  5*nobs, mpi_character, root, mpi_comm_world, req_ptr%req, mpierr)
                     call request_append
-                    call mpi_ibcast(platform % lat,  nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
+                    call mpi_ibcast(platform % lat,   nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
                     call request_append
-                    call mpi_ibcast(platform % lon,  nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
+                    call mpi_ibcast(platform % lon,   nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
                     call request_append
-                    call mpi_ibcast(platform % alt,  nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
+                    call mpi_ibcast(platform % alt,   nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
+                    call request_append
+                    call mpi_ibcast(platform % xyz, 3*nobs, mpi_real,      root, mpi_comm_world, req_ptr%req, mpierr)
 
                     select case (obs_type)
                     case (synop, ships, buoy, metar, sonde_sfc, tamdar_sfc)
@@ -543,15 +568,7 @@ contains
                         nvar = 1
                     end select
 
-                    if(allocated(platform % hdxb)) then
-                        allocate(local_hdxb(nvar,nobs), &
-                                 local_qc  (nvar,nobs))
-
-                        local_hdxb = platform % hdxb(:,:,0)
-                        local_qc   = platform % qc  (:,:,0)
-
-                        sendcount = nvar * nobs
-                    else
+                    if(.not. allocated(platform % hdxb)) then
                         allocate(platform % obs  (nvar,nobs), &
                                  platform % error(nvar,nobs), &
                                  platform % hdxb (nvar,nobs,0:nmember-1), &
@@ -560,12 +577,10 @@ contains
                         if(obs_type /= gpspw .and. obs_type /= gpsref) then
                             allocate(platform % pre(nobs))
                         end if
-
-                        sendcount = 0
                     end if
 
-                    recvcount = 0
-                    displs    = nvar * nobs * nmember
+                    recvcount(:root-1) = 0
+                    displs(:root-1)    = 0
                     do k = 0, nmember-1
                         m            = k+root
                         recvcount(m) = nvar * nobs
@@ -583,13 +598,11 @@ contains
                     end if
 
                     call request_append
-                    call mpi_iallgatherv(     local_hdxb, sendcount,         mpi_real, &
+                    call mpi_iallgatherv(   mpi_in_place,         0,         mpi_datatype_null, &
                                          platform % hdxb, recvcount, displs, mpi_real, mpi_comm_world, req_ptr%req, mpierr)
                     call request_append
-                    call mpi_iallgatherv(      local_qc, sendcount,         mpi_integer, &
+                    call mpi_iallgatherv(  mpi_in_place,         0,         mpi_datatype_null, &
                                           platform % qc, recvcount, displs, mpi_integer, mpi_comm_world, req_ptr%req, mpierr)
-
-                    if(allocated(local_hdxb)) deallocate(local_hdxb,  local_qc)
                 end if
             end associate
         end do

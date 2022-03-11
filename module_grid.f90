@@ -12,11 +12,7 @@ module grid
     implicit none
 
     private
-    public  :: grid_structure!, latlon_to_dist
-
-    !reference information
-!   real, protected    :: lon0, lat0, lat1, lat2, n, f, rh0
-!   real, protected    :: swxy11(2)
+    public  :: grid_structure
 
     type grid_structure
 
@@ -40,7 +36,7 @@ module grid
         real, dimension(:,:),   allocatable :: xlon,   xlat,   &
                                                xlon_u, xlat_u, &
                                                xlon_v, xlat_v
-        real, dimension(:,:),   allocatable :: mu, mub, psfc
+        real, dimension(:,:),   allocatable :: mu, mub, psfc, hgt
 
         real, dimension(:,:,:), allocatable ::   u,   v,   w,   t,  p, &
                                                 ph,  pb, phb,  qv
@@ -255,26 +251,22 @@ contains
         self % nx       = nc % get_dimension('west_east')
         self % ny       = nc % get_dimension('south_north')
         self % nz       = nc % get_dimension('bottom_top')
-        self % dx       = nc % get_attribute('DX')
-        self % dy       = nc % get_attribute('DY')
-        self % cen_lon  = nc % get_attribute('CEN_LON')
-        self % cen_lat  = nc % get_attribute('CEN_LAT')
-        self % truelat1 = nc % get_attribute('TRUELAT1')
-        self % truelat2 = nc % get_attribute('TRUELAT2')
-        self % sta_lon  = nc % get_attribute('STAND_LON')
-
 
         !allocate variables
         associate( nx => self % nx, ny => self % ny, nz => self % nz )
-            allocate(self % xlon  (nx,  ny),  &
-                     self % xlat  (nx,  ny),  & 
-                     self % xlon_u(nx+1,ny),  &
-                     self % xlat_u(nx+1,ny),  &
-                     self % xlon_v(nx,ny+1),  &
-                     self % xlat_v(nx,ny+1),  &
+            if(is_root) then
+                allocate(self % xlon  (nx,  ny),  &
+                         self % xlat  (nx,  ny),  & 
+                         self % xlon_u(nx+1,ny),  &
+                         self % xlat_u(nx+1,ny),  &
+                         self % xlon_v(nx,ny+1),  &
+                         self % xlat_v(nx,ny+1),  &
+                         self % hgt (nx, ny))
+            end if
+                 
+            allocate(self % psfc(nx, ny),     &
                      self % mu  (nx, ny),     &
                      self % mub (nx, ny),     &
-                     self % psfc(nx, ny),     &
                      self % u  (nx+1, ny, nz),&
                      self % v  (nx, ny+1, nz),&
                      self % w  (nx, ny, nz+1),&
@@ -317,12 +309,16 @@ contains
         end associate
 
         !read variables
-        call nc % get_variable('XLONG',   self % xlon)
-        call nc % get_variable('XLAT',    self % xlat)
-        call nc % get_variable('XLONG_U', self % xlon_u)
-        call nc % get_variable('XLAT_U',  self % xlat_u)
-        call nc % get_variable('XLONG_V', self % xlon_v)
-        call nc % get_variable('XLAT_V',  self % xlat_v)
+        if(is_root) then
+            call nc % get_variable('XLONG',   self % xlon)
+            call nc % get_variable('XLAT',    self % xlat)
+            call nc % get_variable('XLONG_U', self % xlon_u)
+            call nc % get_variable('XLAT_U',  self % xlat_u)
+            call nc % get_variable('XLONG_V', self % xlon_v)
+            call nc % get_variable('XLAT_V',  self % xlat_v)
+            call nc % get_variable('HGT',     self % hgt)
+        end if
+
         call nc % get_variable('PSFC',    self % psfc)
         call nc % get_variable('MU',      self % mu)
         call nc % get_variable('MUB',     self % mub)
@@ -367,20 +363,6 @@ contains
                                        where( self % qs < 0.0 ) self % qs = 0.0
         if ( self % model_MP_graupel ) where( self % qg < 0.0 ) self % qg = 0.0
         if ( self % model_MP_hail    ) where( self % qh < 0.0 ) self % qh = 0.0
-
-
-        !Calculate reference information
-!       lon0   = self % sta_lon  * d2r
-!       lat0   = self % cen_lat  * d2r
-!       lat1   = self % truelat1 * d2r
-!       lat2   = self % truelat2 * d2r
-!       n      = log(cos(lat1)/cos(lat2)) / &
-!                log(tan(0.25*pi+0.5*lat2)*cotan(0.25*pi+0.5*lat1))
-!      !f      = cos(lat1)*tan(0.25*pi+0.5*lat1)**n / n
-!      !rh0    = earthradius * f * cotan(0.25*pi+0.5*lat0)**n
-!       f      = cos(lat1)*exp(n*log(tan(0.25*pi+0.5*lat1))) / n
-!       rh0    = earthradius * f * exp(n*log(cotan(0.25*pi+0.5*lat0)))
-!       swxy11 = latlon_to_dist( [self % xlat(1,1), self % xlon(1,1)] )
 
 
         !if use double moment scheme, do some calculations
@@ -517,12 +499,7 @@ contains
         !sum based-state and perturbed pressure to get full pressure
         call saxpy(size(self % ph), 1.0, self % phb, 1, self % ph, 1)
         call saxpy(size(self % p),  1.0, self % pb,  1, self %  p, 1)
-
-        if(.not. write_analy_mean) then
-            deallocate(self % phb, &
-                       self % pb,  &
-                       self % mub)
-        end if
+        call saxpy(size(self % mu), 1.0, self % mub, 1, self % mu, 1)
 
     end subroutine read_model
 
@@ -540,11 +517,19 @@ contains
 
         deallocate(input_filename)
 
+        !ph = ph - phb ; p = p - pb
+        call saxpy(size(self % phb), -1.0, self % phb, 1, self % ph, 1)
+        call saxpy(size(self % pb),  -1.0, self % pb,  1, self % p,  1)
+        call saxpy(size(self % mub), -1.0, self % mub, 1, self % mu, 1)
+
         call nc2 % copy_header_from( nc1 % ncid )
         call nc2 % write_variable('U',      self % u)
         call nc2 % write_variable('V',      self % v)
         call nc2 % write_variable('W',      self % w)
         call nc2 % write_variable('T',      self % t)
+        call nc2 % write_variable('P',      self % p)
+        call nc2 % write_variable('PH',     self % ph)
+        call nc2 % write_variable('MU',     self % mu)
         call nc2 % write_variable('QVAPOR', self % qv)
         call nc2 % write_variable('QRAIN',  self % qr)
         call nc2 % write_variable('QSNOW',  self % qs)
@@ -617,20 +602,27 @@ contains
 
 
         !release allocated arrays
-        deallocate(self % xlon  ,  &
-                   self % xlat  ,  & 
-                   self % xlon_u,  &
-                   self % xlat_u,  &
-                   self % xlon_v,  &
-                   self % xlat_v,  &
+        if(is_root) then
+            deallocate(self % xlon  ,  &
+                       self % xlat  ,  & 
+                       self % xlon_u,  &
+                       self % xlat_u,  &
+                       self % xlon_v,  &
+                       self % xlat_v,  &
+                       self % hgt)
+        end if
+
+        deallocate(self % psfc,    &
                    self % mu  ,    &
-                   self % psfc,    &
+                   self % mub ,    &
                    self % u ,      &
                    self % v ,      &
                    self % w ,      &
                    self % ph,      &
+                   self % phb,     &
                    self % t ,      &
                    self % p ,      &
+                   self % pb,      &
                    self % qv,      &
                    self % qr,      &
                    self % qs)
@@ -693,9 +685,9 @@ contains
             use_local = .true.
 
             associate( nx => self % nx, ny => self % ny, nz => self % nz )
-                allocate(self % mu  (nx, ny),     &
+                allocate(self % psfc(nx, ny),     &
+                         self % mu  (nx, ny),     &
                          self % mub (nx, ny),     &
-                         self % psfc(nx, ny),     &
                          self % u  (nx+1, ny, nz),&
                          self % v  (nx, ny+1, nz),&
                          self % w  (nx, ny, nz+1),&
@@ -738,7 +730,7 @@ contains
                 end if
             end associate
 
-            self % mu   = 0. ; self % mub  = 0. ; self % psfc = 0.
+            self % psfc = 0. ; self % mu   = 0. ; self % mub  = 0.
             self % u    = 0. ; self % v    = 0. ; self % w    = 0.
             self % ph   = 0. ; self % phb  = 0.
             self % p    = 0. ; self % pb   = 0.
@@ -749,9 +741,9 @@ contains
         if(myid == root) then
             call mpi_recv(source_filename, len(source_filename), mpi_character, 0, 101, mpi_comm_world, mpi_status_ignore, mpierr)
 
+            call mpi_reduce(mpi_in_place, self % psfc,  nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
             call mpi_reduce(mpi_in_place, self % mu,    nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
             call mpi_reduce(mpi_in_place, self % mub,   nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
-            call mpi_reduce(mpi_in_place, self % psfc,  nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
             call mpi_reduce(mpi_in_place, self % u,  nx1nynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
             call mpi_reduce(mpi_in_place, self % v,  nxny1nz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
             call mpi_reduce(mpi_in_place, self % w,  nxnynz1, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
@@ -792,9 +784,9 @@ contains
                 call mpi_send(source_filename, len(source_filename), mpi_character, root, 101, mpi_comm_world, mpierr)
             end if
 
+            call mpi_reduce(self % psfc, self % psfc,  nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
             call mpi_reduce(self % mu,   self % mu,    nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
             call mpi_reduce(self % mub,  self % mub,   nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
-            call mpi_reduce(self % psfc, self % psfc,  nxny, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
             call mpi_reduce(self % u,    self % u,  nx1nynz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
             call mpi_reduce(self % v,    self % v,  nxny1nz, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
             call mpi_reduce(self % w,    self % w,  nxnynz1, mpi_real, mpi_sum, root, mpi_comm_world, mpierr)
@@ -833,6 +825,7 @@ contains
 
 
         if(myid == root) then
+            call sscal(nxny,    nmember_inv, self % psfc,1)
             call sscal(nxny,    nmember_inv, self % mu,  1)
             call sscal(nxny,    nmember_inv, self % mub, 1)
             call sscal(nx1nynz, nmember_inv, self % u,   1)
@@ -850,12 +843,14 @@ contains
             !ph = ph - phb ; p = p - pb
             call saxpy(nxnynz1, -1.0, self % phb, 1, self % ph, 1)
             call saxpy(nxnynz,  -1.0, self % pb,  1, self % p,  1)
+            call saxpy(nxny,    -1.0, self % mub, 1, self % mu, 1)
 
 
             nc1 =   open_wrf_ncdf(source_filename)
             nc2 = create_wrf_ncdf(       filename)
 
             call nc2 % copy_header_from( nc1 % ncid )
+            call nc2 % write_variable('PSFC',   self % psfc)
             call nc2 % write_variable('MU',     self % mu)
             call nc2 % write_variable('MUB',    self % mub)
             call nc2 % write_variable('U',      self % u)
@@ -907,9 +902,9 @@ contains
 
 
         if(use_local) then
-            deallocate(self % mu  ,    &
+            deallocate(self % psfc,    &
+                       self % mu  ,    &
                        self % mub ,    & 
-                       self % psfc,    &
                        self % u ,      &
                        self % v ,      &
                        self % w ,      &
@@ -1125,18 +1120,5 @@ contains
         call cpu_time(time)
         print '(f6.2,2x,a)', time, message
     end subroutine print_cpu_time
-
-!   pure function latlon_to_dist(latlon) result(dist)
-!       implicit none
-!       real, dimension(2), intent(in) :: latlon  ![ lat,  lon]
-!       real, dimension(2)             :: dist    ![disx, disy]
-!       real                           :: rh, dlon
-
-!      !rh      = earthradius * f * cotan(0.25*pi+0.5*latlon(1)*d2r)**n
-!       rh      = earthradius * f * exp(n*log(cotan(0.25*pi+0.5*latlon(1)*d2r)))
-!       dlon    = n*(latlon(2)*d2r-lon0)
-!       dist(1) =      rh*sin(dlon)
-!       dist(2) =  rh0-rh*cos(dlon)
-!   end function latlon_to_dist
 
 end module grid

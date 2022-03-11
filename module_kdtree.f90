@@ -47,13 +47,6 @@ module kdtree
   !! kd-tree will not bother dividing a box any further if it contains
   !! this many or fewer items.
 
-  real(dp), parameter :: pi  = 4*atan(1.0_dp)
-  real(dp), parameter :: d2r = pi/180.0_dp
-  !! pi, duh
-
-  real(dp), parameter :: re = 6371.3d3
-  !! radius of earth
-
 
   ! custom types
   !------------------------------------------------------------
@@ -73,8 +66,6 @@ module kdtree
      real(dp), pointer :: pts(:,:)
      !! array of all points stored in the kd tree, in x/y/z form
 
-     real(dp), pointer :: pts_ll(:,:)
-     !! array of all points stored in the kd tree, in original lon/lat form
   end type kd_root
 
   type boxnode
@@ -119,7 +110,6 @@ contains
     type(KD_ROOT), intent(inout)  :: root
 
     deallocate(root%ptindx)
-    deallocate(root%pts_ll)
     deallocate(root%pts)
     deallocate(root%boxes)
   end subroutine kd_free
@@ -131,7 +121,7 @@ contains
 
   
 
-  subroutine kd_init(root, lons, lats)
+  subroutine kd_init(root, xyz)
     implicit none 
     !! Initialize a kd-tree structure given a list of lat/lon pairs.
     !! The lons and lats variables are copied internally by the module and so
@@ -140,11 +130,8 @@ contains
     type(KD_ROOT), intent(out)  :: root
     !! the root node of our kd-tree, used by kd_search_nnearest() and kd_search_radius()
 
-    real(sp), intent(in), target :: lats(:)
+    real(sp), intent(in), target :: xyz(:,:)
     !! list of latitudes (degrees)
-
-    real(sp), intent(in), target :: lons(:)
-    !! list of longitudes (degrees). These can be within any range.
 
     ! variables used for kd-tree creation loop... too lazy to document what they all are, sorry.
     integer :: kk, np, ntmp, n, m, nboxes, nowtask, ptlo, pthi
@@ -153,41 +140,38 @@ contains
     integer,  pointer :: hp(:)
     real(dp) :: lo(kd_dim), hi(kd_dim)
     integer  :: taskmom(50), taskdim(50)
+    integer  :: narray
 
 
     ! generate initial unsorted index array
-    allocate(root%ptindx(size(lons)))
-    do n=1, size(root%ptindx)
+    narray = size(xyz,2)
+    allocate(root%ptindx(narray))
+    do n=1, narray
        root%ptindx(n) = n
     end do
 
     ! convert lon/lat to an internally stored x/y/z
-    allocate(root%pts_ll( size(lons), 2))
-    allocate(root%pts( size(lons), kd_dim))
-    do n=1, size(lons)
-       root%pts_ll(n,1) = lons(n)*d2r
-       root%pts_ll(n,2) = lats(n)*d2r
-       root%pts(n,:) = ll2xyz( lons(n)*1.0_dp, lats(n)*1.0_dp )
-    end do
+    allocate(root%pts(kd_dim, narray))
+    root%pts = xyz
 
     ! calculate the number of kd boxes needed and create memory for them
     m = 1
-    ntmp = size(root%ptindx)
+    ntmp = narray
     do while (ntmp > 0)
        ntmp = ishft(ntmp, -1)
        m = ishft(m,1)
     end do
-    nboxes = 2*size(root%ptindx)-ishft(m, -1)
+    nboxes = 2*narray-ishft(m, -1)
     if (m<nboxes) nboxes = m
     allocate(root%boxes(nboxes))
 
     ! initialize the root box, and put its subdivision on the task list
     lo = (/-1e20, -1e20, -1e20/)
     hi = (/ 1e20,  1e20,  1e20/)
-    root%boxes(1) = boxnode(lo,hi,0,0,0,1,size(root%ptindx))
+    root%boxes(1) = boxnode(lo,hi,0,0,0,1,narray)
 
     !if we were give a small list, just quit now, there is nothing to divide
-    if(size(root%ptindx) < MINDIV) return
+    if(narray < MINDIV) return
 
     !otherwise start splitting up the tree
     jbox = 1
@@ -205,7 +189,7 @@ contains
        hp => root%ptindx(ptlo:pthi)
 
        ! rotate division among x/y/z coordinates
-       cp => root%pts(:,tdim+1)
+       cp => root%pts(tdim+1,:)
 
        ! determine dividing points
        np = pthi - ptlo + 1 ! total points
@@ -249,7 +233,7 @@ contains
 
 
 
-  subroutine kd_search_radius(root,  s_lon, s_lat, s_radius, r_points, r_distance, r_num, exact)
+  subroutine kd_search_radius(root, xyz, s_radius, r_points, r_distance, r_num)
     implicit none 
     !! searches for all the points within a given radius.
     !! Maximum number of points to search for depends on the size of "r_points" and "r_distance".
@@ -258,11 +242,8 @@ contains
     type(kd_root), intent(in) :: root
     !! root node containing all the information about the kd-tree
 
-    real(sp), intent(in) :: s_lon
+    real(sp), intent(in) :: xyz(kd_dim)
     !! The longitude of the center of the search location (degrees)
-
-    real(sp), intent(in) :: s_lat
-    !! The latitude of the center of the search location (degrees)
 
     real(sp), intent(in) :: s_radius
     !! the radius of the search (meters)
@@ -280,16 +261,10 @@ contains
     !! the number of resulting points that were found.
     !! r_points[1:r_num] and r_distance[1:r_num] are populated after calling this subroutine
 
-    logical, intent(in), optional :: exact
-    !! if true, the exact great circle distances will be calculated (slower). Otherwise
-    !! the euclidean distances are calculated (faster). The faster method
-    !! is close enough for most purposes, especially if the search radius is small
-    !! compared to the radius of the earth. Default is False.
-
 
     ! local variables
     real(dp) :: s_xyz(kd_dim)
-    real(dp) :: r, slatr, clatr, lonr
+    real(dp) :: r
     integer  :: k, i, n, nb, nbold, ntask, jdim, d1, d2
     integer  :: task(task_size)
     type(boxnode), pointer :: boxes(:)
@@ -304,7 +279,7 @@ contains
     end if
 
     ! convert search point to x/y/z
-    s_xyz = ll2xyz(s_lon*1.0_dp, s_lat*1.0_dp)
+    s_xyz = xyz
 
     ! find the smallest box that completely contains the bounds of the search point
     nb = 1
@@ -326,11 +301,6 @@ contains
     task(1) = nb
     ntask = 1
     r_num = 0
-
-    ! convert search point to radians
-    clatr = cos(s_lat*d2r)
-    slatr = sin(s_lat*d2r)
-    lonr  = s_lon * d2r
 
     do while(ntask /= 0)
        k = task(ntask)
@@ -356,22 +326,11 @@ contains
           do i = boxes(k)%ptlo, boxes(k)%pthi
              n = root%ptindx(i)
 
-             ! calculate distance, either great-circle (slower) or
-             ! Euclidean (faster)
-             if (present(exact)) then
-                ! calculate great-circle distance
-                if(exact) then
-                    r = dist_gc(lonr, clatr, slatr, root%pts_ll(n,1), root%pts_ll(n,2))
-                else
-                    r = dist_euc(s_xyz, root%pts(n,:))
-                end if
-             else
-                ! Euclidean distance, should be close enough to great-circle
-                ! distance if the search radius is small enough, plus its much
-                ! faster. Euclidean distance is smaller than greatcircle, and so more
-                ! points will be included here
-                r = dist_euc(s_xyz, root%pts(n,:))
-             end if
+             ! Euclidean distance, should be close enough to great-circle
+             ! distance if the search radius is small enough, plus its much
+             ! faster. Euclidean distance is smaller than greatcircle, and so more
+             ! points will be included here
+             r = dist_euc(s_xyz, root%pts(:,n))
 
 
              ! a new point was found
@@ -401,18 +360,15 @@ contains
 
 
 
-  pure subroutine kd_search_nnearest(root, s_lon, s_lat, s_num, r_points, r_distance, r_num, exact)
+  pure subroutine kd_search_nnearest(root, xyz, s_num, r_points, r_distance, r_num)
     implicit none 
     !! selects the "s_num" points in the kd tree that are nearest the search point.
 
     type(kd_root), intent(in) :: root
     !! root node containing all the information about the kd-tree
 
-    real(sp), intent(in) :: s_lon
+    real(sp), intent(in) :: xyz(kd_dim)
     !! The longitude of the center of the search location (degrees)
-
-    real(sp), intent(in) :: s_lat
-    !! The latitude of the center of the search location (degrees)
 
     integer, intent(in) :: s_num
     !! the max number of points to find,
@@ -427,13 +383,6 @@ contains
     integer, intent(out) :: r_num
     !! the number of resulting points that were found
 
-    logical, intent(in), optional :: exact
-    !! if true, the exact great circle distances will be calculated (slower). Otherwise
-    !! the euclidean distances are calculated (faster). The faster method
-    !! is close enough for most purposes, especially if the search radius is small
-    !! compared to the radius of the earth. Default is False.
-
-
     real(dp) :: dn(s_num)
     !! heap, containing distances to points
 
@@ -444,13 +393,12 @@ contains
     real(dp) :: d
     real(dp) :: s_xyz(kd_dim)
     integer  :: task(task_size)
-    real(dp) :: slatr, clatr, lonr
 
     ! set all entries in the heap to a really big number
     dn = 1e20
 
     ! convert search point to xyz
-    s_xyz = ll2xyz(s_lon * 1.0_dp, s_lat*1.0_dp)
+    s_xyz = xyz
 
     ! find the smallest mother box with enough points to initialize the heap
     kp = kd_locate(root, s_xyz)
@@ -458,23 +406,12 @@ contains
        kp = root%boxes(kp)%mom
     end do
 
-    ! convert search point to radians
-    clatr = cos(s_lat*d2r)
-    slatr = sin(s_lat*d2r)
-    lonr  = s_lon * d2r
-
     ! initialize the heap with the "s_num" closest points
     do i = root%boxes(kp)%ptlo, root%boxes(kp)%pthi
        n = root%ptindx(i)
 
        ! calculate distance to point
-       if (present(exact) .and. exact) then
-          ! great cicle distance (slower)
-          d = dist_gc(lonr, clatr, slatr, root%pts_ll(n,1), root%pts_ll(n,2))
-       else
-          ! euclidean distance (faster)
-          d = dist_euc( s_xyz, root%pts(n,:))
-       end if
+       d = dist_euc( s_xyz, root%pts(:,n))
 
        ! if a closer point was found
        if (d < dn(1) ) then
@@ -512,13 +449,7 @@ contains
                 n = root%ptindx(i)
 
                 ! calculate distance
-                if (present(exact) .and. exact) then
-                   ! great circle distance
-                   d = dist_gc(lonr, clatr, slatr, root%pts_ll(n,1), root%pts_ll(n,2))
-                else
-                   ! euclidean distance
-                   d = dist_euc(root%pts(n,:), s_xyz)
-                end if
+                d = dist_euc(root%pts(:,n), s_xyz)
 
                 if (d < dn(1)) then
                    ! found a closer point, add it to the heap
@@ -668,76 +599,21 @@ contains
   !================================================================================
 
 
-
-  pure function ll2xyz(lon, lat)
-    implicit none 
-    !! convert a point in longitude/latitude into x/y/z coordinates
-
-    real(dp), intent(in) :: lon
-    !! logitude (degrees)
-
-    real(dp), intent(in) :: lat
-    !! latitude (degrees)
-
-    real(dp) :: ll2xyz(3)
-    !! resulting x/y/z (meters)
-
-    ll2xyz(1) = re * cos(lat*d2r) * cos(lon*d2r)
-    ll2xyz(2) = re * cos(lat*d2r) * sin(lon*d2r)
-    ll2xyz(3) = re * sin(lat*d2r)
-
-  end function ll2xyz
-
-
-
-  !================================================================================
-  !================================================================================
-
-
-
   pure function dist_euc(p1, p2)
     implicit none 
     !! calculate the euclidean distance between two points
 
-    real(dp), intent(in) :: p1(:), p2(:)
+    real(dp), intent(in) :: p1(kd_dim), p2(kd_dim)
     !! target points, in x/y/z space
 
     real(dp) :: dist_euc
     !! euclidean distance (meters)
 
-    integer :: n
-    real(dp) :: r1, r2
+    real(dp) :: r(kd_dim)
 
-    r1 = 0.0d0
-    do n=1,size(p1)
-       r2 = p1(n) - p2(n)
-       r1 = r1 + (r2*r2)
-    end do
-    dist_euc = sqrt(r1)
+    r        = p1 - p2
+    dist_euc = sqrt(dot_product(r,r))
   end function dist_euc
-
-
-
-  !================================================================================
-  !================================================================================
-
-
-
-  pure function dist_gc(lon1, clat1, slat1, lon2, lat2)
-    implicit none 
-    !! calculate the great circle distance between two points
-    
-    real(dp), intent(in) :: lon1, clat1, slat1
-    !! point 1 longitude (degrees), cosine of latitude, sine of latitude
-
-    real(dp), intent(in) :: lon2, lat2
-    !! point 2 longitude (degrees), latitude (degrees)
-    
-    real(dp) :: dist_gc
-
-    dist_gc = re * acos(min(slat1*sin(lat2) + clat1*cos(lat2) * cos( (lon2-lon1)), 1.0))
-
-  end function dist_gc
 
 
 
